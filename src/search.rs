@@ -136,8 +136,9 @@ pub fn search_archive(
     sep: char,
     globs: Option<&globset::GlobSet>,
     max_count: Option<u64>,
+    strategy: crate::inflate::Strategy,
 ) -> crate::archive::Outcome {
-    let rdr = match crate::archive::open_decoded(path) {
+    let rdr = match crate::archive::open_decoded_with(path, strategy) {
         Ok(r) => r,
         Err(e) => {
             let mut o = crate::archive::Outcome::default();

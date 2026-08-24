@@ -20,6 +20,7 @@ fn main() -> anyhow::Result<()> {
     for p in &items {
         let mut buf = bw.buffer();
         let mut printer = print::build(&args.print, &mut buf);
+        let strategy = trg::inflate::choose(args.inflate, p, args.inflate_budget);
         let outcome = search::search_archive(
             p,
             &matcher,
@@ -28,6 +29,7 @@ fn main() -> anyhow::Result<()> {
             args.archive_sep,
             globs.as_ref(),
             args.search.max_count,
+            strategy,
         );
         if printer.has_written() {
             matched = true;
