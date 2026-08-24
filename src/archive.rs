@@ -28,6 +28,10 @@ pub struct Outcome {
     /// no opinion about what a match is — and it is the authoritative source
     /// for exit code 0, in place of "did this archive write any bytes".
     pub matched: bool,
+    /// Advisory lines for stderr. Deliberately **not** `errors`: a note says
+    /// the run read everything and printed less than it found, which is worth
+    /// telling an operator and must not turn a 0 or a 1 into a 2.
+    pub notes: Vec<String>,
 }
 
 /// Drops an archive's page-cache footprint when the reader that owns it dies.

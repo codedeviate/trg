@@ -85,11 +85,12 @@ pub struct MaxCount<S> {
     inner: S,
     limit: Option<u64>,
     seen: u64,
+    binary_at: Option<u64>,
 }
 
 impl<S: Sink> MaxCount<S> {
     pub fn new(inner: S, limit: Option<u64>) -> Self {
-        Self { inner, limit, seen: 0 }
+        Self { inner, limit, seen: 0, binary_at: None }
     }
 
     /// Whether the searcher reported any match at all for this member.
@@ -98,6 +99,18 @@ impl<S: Sink> MaxCount<S> {
     /// truth. See the note on `matched` below for why the difference matters.
     pub fn saw_match(&self) -> bool {
         self.seen > 0
+    }
+
+    /// Matched, then ran into binary data — the one combination that makes
+    /// `SummarySink` retract its count and print nothing.
+    ///
+    /// Read from the searcher's own `SinkFinish`, which is the same value
+    /// `SummarySink::finish` consults before squashing `match_count` to zero,
+    /// so the two can never disagree about whether a count was suppressed.
+    /// Only `-c` cares: `-l` prints the path, `--json` emits its records and
+    /// the default printer emits a binary warning of its own.
+    pub fn count_suppressed_by_binary(&self) -> bool {
+        self.seen > 0 && self.binary_at.is_some()
     }
 }
 
@@ -151,10 +164,12 @@ impl<S: Sink> Sink for MaxCount<S> {
     // `begin`. Without these two, `-c` and `-l` print nothing at all.
     fn begin(&mut self, s: &Searcher) -> Result<bool, S::Error> {
         self.seen = 0;
+        self.binary_at = None;
         self.inner.begin(s)
     }
 
     fn finish(&mut self, s: &Searcher, f: &SinkFinish) -> Result<(), S::Error> {
+        self.binary_at = f.binary_byte_offset();
         self.inner.finish(s, f)
     }
 }
@@ -183,6 +198,10 @@ pub struct SearchCtx<'a> {
     /// A request, not a decision: `open_decoded_dropping` narrows it to
     /// archives, so a plain live logfile is never evicted.
     pub drop_cache: bool,
+    /// Whether the run is in `-c` mode. Not used to choose a printer — `cli`
+    /// already did that — only to decide whether a suppressed count is worth a
+    /// note on stderr.
+    pub count_mode: bool,
 }
 
 /// Whether `-g` excludes this input, for the one case `for_each_member` cannot
@@ -195,6 +214,13 @@ pub struct SearchCtx<'a> {
 /// ignore `-g` for every live log.
 fn excluded_plain_file(member: &str, path: &Path, globs: Option<&globset::GlobSet>) -> bool {
     member.is_empty() && globs.is_some_and(|set| !set.is_match(path))
+}
+
+/// What one member's search concluded, beyond the bytes it printed.
+pub struct MemberVerdict {
+    pub matched: bool,
+    /// The member matched but `-c` printed no count line for it.
+    pub count_suppressed: bool,
 }
 
 /// Search one member, returning whether it matched.
@@ -213,7 +239,7 @@ fn search_member(
     r: &mut dyn io::Read,
     display: &str,
     max_count: Option<u64>,
-) -> io::Result<bool> {
+) -> io::Result<MemberVerdict> {
     // The three printers have unrelated sink types, so the body is monomorphic
     // per arm; a macro keeps the one real sequence — build sink, cap it,
     // search, ask it what it saw — written once.
@@ -226,8 +252,9 @@ fn search_member(
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.
             let hit = capped.saw_match();
+            let suppressed = capped.count_suppressed_by_binary();
             res.map_err(io::Error::other)?;
-            hit
+            MemberVerdict { matched: hit, count_suppressed: suppressed }
         }};
     }
 
@@ -257,15 +284,28 @@ pub fn search_archive(
     };
 
     let mut matched = false;
+    let mut notes: Vec<String> = Vec::new();
     let mut out = crate::archive::for_each_member(rdr, globs, |member, r| {
         if excluded_plain_file(member, path, globs) {
             return Ok(());
         }
         let display = display_path(path, member, sep);
-        matched |= search_member(printer, m, s, r, &display, max_count)?;
+        let v = search_member(printer, m, s, r, &display, max_count)?;
+        matched |= v.matched;
+        // `-c` is otherwise the only mode that goes completely silent on a
+        // member that matched and then hit binary data: stdout stays empty and
+        // the exit code stays 0, so `n=$(trg -c PAT a.tgz)` yields '' and a
+        // script testing `((n>0))` concludes the logs are clean. stdout must
+        // not change — it is rg-compatible, and the count really is unknown —
+        // so the correction goes to stderr, where it costs a pipeline nothing
+        // and an operator everything.
+        if ctx.count_mode && v.count_suppressed {
+            notes.push(format!("{display}: binary data; count suppressed"));
+        }
         Ok(())
     });
     out.matched = matched;
+    out.notes = notes;
     out
 }
 

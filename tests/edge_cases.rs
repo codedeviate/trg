@@ -72,6 +72,60 @@ fn list_members_with_no_members_is_a_clean_one() {
     assert_eq!(c, Some(1));
 }
 
+/// `-T` answers a question about the tar headers, so it needs no pattern —
+/// but the positional rule used to hand `archive.tgz` to the pattern slot,
+/// leaving nothing to walk. The command exited 1 having printed nothing, which
+/// is indistinguishable from an archive with no members.
+#[test]
+fn list_members_needs_no_pattern() {
+    let f = helpers::tgz(
+        "t.tgz",
+        &[("logs/x.access.log", b"whatever\n"), ("logs/x.error.log", b"whatever\n")],
+    );
+    let (out, err, c) = run(&["-T", f.path.to_str().unwrap()]);
+    assert!(out.contains("logs/x.access.log"), "got {out} / {err}");
+    assert!(out.contains("logs/x.error.log"), "got {out}");
+    assert_eq!(c, Some(0), "listed members is a 0, stderr={err}");
+}
+
+/// `-c` was the only mode that went completely silent on a member that matched
+/// and then hit binary data: `SummarySink` squashes its count to zero, so
+/// stdout stayed empty while the exit code stayed 0. A script doing
+/// `n=$(trg -c PAT a.tgz); ((n>0))` reads that as "clean".
+///
+/// stdout must not change — it is rg-compatible and the count really is
+/// unknown — so the correction is a stderr note. The exit code does not move
+/// either: everything was read.
+#[test]
+fn count_mode_says_on_stderr_when_binary_data_suppressed_the_count() {
+    // The match has to be reported *before* the binary byte is seen, which
+    // means they must land in different buffer fills: grep-searcher's default
+    // buffer is 8 KiB, so the NUL goes well past that.
+    let mut body = b"NEEDLE here\n".to_vec();
+    for i in 0..4000 {
+        body.extend_from_slice(format!("filler line {i} padding padding padding\n").as_bytes());
+    }
+    body.extend_from_slice(b"trailing\x00\x00binary\n");
+    let f = helpers::tgz("cb.tgz", &[("logs/big.log", &body)]);
+    let p = f.path.to_str().unwrap();
+
+    let (out, err, c) = run(&["-c", "NEEDLE", p]);
+    assert!(out.is_empty(), "stdout stays rg-compatible and empty, got {out}");
+    assert_eq!(c, Some(0), "the archive was read in full and it matched");
+    assert!(
+        err.contains("logs/big.log") && err.contains("count suppressed"),
+        "-c must not go silent about a suppressed count, stderr={err}"
+    );
+
+    // The other modes were never silent and must stay unchanged.
+    let (l_out, l_err, _) = run(&["-l", "NEEDLE", p]);
+    assert!(l_out.contains("logs/big.log"), "got {l_out}");
+    assert!(l_err.is_empty(), "-l has nothing to warn about, got {l_err}");
+    let (_, q_err, q_c) = run(&["-q", "NEEDLE", p]);
+    assert_eq!(q_c, Some(0));
+    assert!(q_err.is_empty(), "-q prints nothing, including notes: {q_err}");
+}
+
 #[test]
 fn count_and_files_with_matches_modes() {
     let f = helpers::tgz("c.tgz", &[("logs/a.log", b"NEEDLE\nNEEDLE\nno\n")]);

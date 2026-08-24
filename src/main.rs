@@ -87,6 +87,7 @@ fn run() -> anyhow::Result<RunStatus> {
         globs: globs.as_ref(),
         max_count: args.search.max_count,
         drop_cache: args.drop_cache,
+        count_mode: args.print.mode == print::Mode::Count,
     };
 
     let jobs: Vec<trg::sched::Job> = items
@@ -126,6 +127,12 @@ fn run() -> anyhow::Result<RunStatus> {
                 matched = true;
             }
             let r = bw.print(&done.buffer);
+            // Notes ride the same ordered path as errors so a sorted run says
+            // the same thing twice in a row, but they leave `partial` alone:
+            // nothing went unread, so the exit code is not theirs to change.
+            for n in &done.outcome.notes {
+                eprintln!("trg: {n}");
+            }
             // Report this archive's own errors even if stdout has gone away:
             // stderr is usually still attached, and it is where the diagnosis
             // lives.

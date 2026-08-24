@@ -43,7 +43,8 @@ OUTPUT (same meaning as ripgrep):
 ARCHIVES:
     -g, --glob PAT        filter MEMBERS inside archives; repeatable
     -T, --list-members    list member paths without searching; lists every
-                          member, including ones a search skips as binary
+                          member, including ones a search skips as binary.
+                          Takes no pattern: `trg -T archive.tgz` lists it
         --archive-sep C   separator in archive:member:line (default ':')
         --no-sort         allow output in completion order
 
@@ -271,7 +272,22 @@ where
         print::Mode::Standard
     };
 
-    if a.patterns.is_empty() {
+    // `-T` asks a question about the tar headers, not about the members'
+    // contents: `list_members` never consults the matcher at all. So it needs
+    // no pattern — but the positional rule above hands the first positional to
+    // the pattern slot regardless, which made `trg -T archive.tgz` swallow the
+    // archive path as a pattern, find no paths to walk, and exit 1 in silence.
+    // The first natural use of a documented flag did nothing.
+    //
+    // Exactly one positional and no `-e` is unambiguous: there is nothing for a
+    // pattern to do, so it is the path. Two or more keep the `PATTERN PATH...`
+    // reading, so `trg -T pat archive.tgz` still works.
+    if a.list_members && a.paths.is_empty() && a.patterns.len() == 1 {
+        a.paths.push(PathBuf::from(a.patterns.pop().expect("len checked")));
+    }
+
+    // `-T` is the one mode with no pattern to be missing.
+    if a.patterns.is_empty() && !a.list_members {
         anyhow::bail!("no pattern given\n\n{HELP}");
     }
     Ok(a)
@@ -416,6 +432,44 @@ mod tests {
         let argv: Vec<std::ffi::OsString> =
             ["trg", "--color", "nonsense", "pat", "f"].iter().map(|s| s.into()).collect();
         assert!(parse_from(argv).is_err());
+    }
+
+    /// The trap this fix removes: `-T` needs no pattern, but the positional
+    /// rule gave the archive path to the pattern slot, leaving no paths at all.
+    /// The command exited 1 in silence — the first natural use of a documented
+    /// flag doing nothing.
+    #[test]
+    fn dash_t_with_one_positional_takes_it_as_a_path_not_a_pattern() {
+        let a = p(&["-T", "archive.tgz"]);
+        assert!(a.patterns.is_empty(), "-T needs no pattern, got {:?}", a.patterns);
+        assert_eq!(a.paths, vec![PathBuf::from("archive.tgz")]);
+    }
+
+    #[test]
+    fn dash_t_with_a_pattern_and_a_path_still_parses_the_old_way() {
+        let a = p(&["-T", "pat", "archive.tgz"]);
+        assert_eq!(a.patterns, vec!["pat"]);
+        assert_eq!(a.paths, vec![PathBuf::from("archive.tgz")]);
+    }
+
+    /// `-e` fills the pattern slot explicitly, so the lone positional is a path
+    /// for the ordinary reason and the `-T` rule must not double-move it.
+    #[test]
+    fn dash_t_with_an_explicit_e_pattern_keeps_both() {
+        let a = p(&["-T", "-e", "pat", "archive.tgz"]);
+        assert_eq!(a.patterns, vec!["pat"]);
+        assert_eq!(a.paths, vec![PathBuf::from("archive.tgz")]);
+    }
+
+    /// Only `-T` is exempt. Everything else still refuses to run patternless
+    /// rather than searching for the empty string.
+    #[test]
+    fn a_missing_pattern_is_still_an_error_without_dash_t() {
+        let argv: Vec<std::ffi::OsString> =
+            ["trg", "archive.tgz"].iter().map(|s| s.into()).collect();
+        assert!(parse_from(argv).is_ok(), "one positional is the pattern");
+        let argv: Vec<std::ffi::OsString> = ["trg"].iter().map(|s| s.into()).collect();
+        assert!(parse_from(argv).is_err(), "no positionals at all must fail");
     }
 
     #[test]
