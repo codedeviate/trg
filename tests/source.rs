@@ -81,3 +81,50 @@ fn a_directory_of_ordinary_files_still_resolves_in_sorted_order() {
     let names: Vec<_> = items.iter().map(|p| p.file_name().unwrap().to_str().unwrap()).collect();
     assert_eq!(names, vec!["a.tgz", "b.tgz", "c.tgz"]);
 }
+
+#[test]
+fn a_symlink_and_its_target_in_the_same_directory_dedup_to_one_item() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("real.log"), b"NEEDLE dup\n").unwrap();
+    std::os::unix::fs::symlink(d.path().join("real.log"), d.path().join("link_to_real.log"))
+        .unwrap();
+
+    let (items, errs) = trg::source::resolve(&[d.path().to_path_buf()]);
+    assert!(errs.is_empty(), "got errs {errs:?}");
+    assert_eq!(items.len(), 1, "symlink and target must dedup to one item, got {items:?}");
+}
+
+#[test]
+fn two_hardlinks_to_the_same_file_dedup_to_one_item() {
+    let d = tempfile::tempdir().unwrap();
+    let a = d.path().join("a.log");
+    let b = d.path().join("b.log");
+    std::fs::write(&a, b"NEEDLE dup\n").unwrap();
+    std::fs::hard_link(&a, &b).unwrap();
+
+    let (items, errs) = trg::source::resolve(&[d.path().to_path_buf()]);
+    assert!(errs.is_empty(), "got errs {errs:?}");
+    assert_eq!(items.len(), 1, "hardlinks must dedup to one item, got {items:?}");
+}
+
+#[test]
+fn the_same_path_named_twice_on_the_command_line_dedups_to_one_item() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("a.log");
+    std::fs::write(&p, b"NEEDLE dup\n").unwrap();
+
+    let (items, errs) = trg::source::resolve(&[p.clone(), p.clone()]);
+    assert!(errs.is_empty(), "got errs {errs:?}");
+    assert_eq!(items.len(), 1, "same path named twice must dedup, got {items:?}");
+}
+
+#[test]
+fn distinct_files_with_identical_content_are_not_mistaken_for_duplicates() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("a.log"), b"NEEDLE same content\n").unwrap();
+    std::fs::write(d.path().join("b.log"), b"NEEDLE same content\n").unwrap();
+
+    let (items, errs) = trg::source::resolve(&[d.path().to_path_buf()]);
+    assert!(errs.is_empty(), "got errs {errs:?}");
+    assert_eq!(items.len(), 2, "distinct files must both be kept, got {items:?}");
+}
