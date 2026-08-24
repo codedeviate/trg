@@ -43,3 +43,41 @@ fn no_globs_means_none_not_an_empty_set() {
 fn an_invalid_glob_is_an_error() {
     assert!(trg::source::build_globs(&["[".into()]).is_err());
 }
+
+#[test]
+fn a_symlinked_file_in_a_walked_directory_is_searched() {
+    let d = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let target = elsewhere.path().join("target.log");
+    std::fs::write(&target, b"NEEDLE elsewhere\n").unwrap();
+    std::os::unix::fs::symlink(&target, d.path().join("linked.log")).unwrap();
+
+    let (items, errs) = trg::source::resolve(&[d.path().to_path_buf()]);
+    assert!(errs.is_empty(), "got errs {errs:?}");
+    let names: Vec<_> = items.iter().map(|p| p.file_name().unwrap().to_str().unwrap()).collect();
+    assert_eq!(names, vec!["linked.log"], "symlinked file must be picked up, got {items:?}");
+}
+
+#[test]
+fn a_broken_symlink_in_a_walked_directory_is_an_error_not_silently_skipped() {
+    let d = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(d.path().join("nonexistent.log"), d.path().join("broken.log"))
+        .unwrap();
+
+    let (items, errs) = trg::source::resolve(&[d.path().to_path_buf()]);
+    assert!(items.is_empty(), "a broken symlink must not be yielded as a work item: {items:?}");
+    assert_eq!(errs.len(), 1, "got errs {errs:?}");
+    assert!(errs[0].contains("broken.log"), "got errs {errs:?}");
+}
+
+#[test]
+fn a_directory_of_ordinary_files_still_resolves_in_sorted_order() {
+    let d = tempfile::tempdir().unwrap();
+    for n in ["b.tgz", "a.tgz", "c.tgz"] {
+        std::fs::write(d.path().join(n), b"x").unwrap();
+    }
+    let (items, errs) = trg::source::resolve(&[d.path().to_path_buf()]);
+    assert!(errs.is_empty());
+    let names: Vec<_> = items.iter().map(|p| p.file_name().unwrap().to_str().unwrap()).collect();
+    assert_eq!(names, vec!["a.tgz", "b.tgz", "c.tgz"]);
+}
