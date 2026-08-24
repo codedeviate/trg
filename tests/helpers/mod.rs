@@ -142,3 +142,35 @@ pub fn bulky_log() -> Vec<u8> {
         .flat_map(|i| format!("2026-08-24T00:00:00Z req {i} GET /path/{i}?q={i}\n").into_bytes())
         .collect()
 }
+
+/// Run the `trg` binary with a **bounded** wait: a hang fails the test loudly
+/// instead of stalling the whole suite. `Command::output` would block forever
+/// on a deadlocked child, and the scheduler is exactly the kind of code where
+/// that has happened before.
+pub fn run_trg(args: &[&str]) -> (String, String, Option<i32>) {
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+
+    let child = Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let out = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("trg did not exit within 60s")
+        .unwrap();
+
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code(),
+    )
+}

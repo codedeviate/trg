@@ -12,12 +12,22 @@ use crate::sniff::{sniff, Format, SNIFF_LEN};
 
 /// What happened while walking one archive.
 ///
-/// `errors` being non-empty is what marks the whole run partial (exit 2).
+/// `errors` being non-empty is what marks the whole run partial (exit 2), and
+/// it is the **only** thing that does. In particular neither `members_seen !=
+/// members_searched` nor `members_searched == 0` may be read as a partial run:
+/// an archive whose members are all excluded by `-g` yields `seen = 2,
+/// searched = 0, errors = []`, and it was read completely. (`members_searched`
+/// also counts a glob-skipped plain file as searched, so it is not a sound
+/// basis for anything.)
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub members_seen: usize,
     pub members_searched: usize,
     pub errors: Vec<String>,
+    /// Whether any member matched. Set by the caller — `for_each_member` has
+    /// no opinion about what a match is — and it is the authoritative source
+    /// for exit code 0, in place of "did this archive write any bytes".
+    pub matched: bool,
 }
 
 /// Drops an archive's page-cache footprint when the reader that owns it dies.

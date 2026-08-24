@@ -36,7 +36,9 @@ OUTPUT (same meaning as ripgrep):
                           print member paths only
     -q, --quiet           print nothing; exit code only
         --json            JSON Lines output
-        --color WHEN      auto | always | never
+        --color WHEN      auto | always | never (auto: only on a tty)
+                          If several output modes are given, the most
+                          suppressive wins: -q, then -l, then -c, then --json.
 
 ARCHIVES:
     -g, --glob PAT        filter MEMBERS inside archives; repeatable
@@ -252,6 +254,21 @@ where
         a.search.after = n;
     }
     a.print.line_numbers = a.search.line_numbers;
+    // Collapse the output-mode flags into exactly one mode here, so nothing
+    // downstream has to re-derive the precedence. Most suppressive wins: `-q`
+    // asked for no output at all, and honouring the noisier flag over it would
+    // be the wrong way to resolve a contradiction.
+    a.print.mode = if a.quiet {
+        print::Mode::Quiet
+    } else if a.files_with_matches {
+        print::Mode::FilesWithMatches
+    } else if a.count {
+        print::Mode::Count
+    } else if a.json {
+        print::Mode::Json
+    } else {
+        print::Mode::Standard
+    };
 
     if a.patterns.is_empty() {
         anyhow::bail!("no pattern given\n\n{HELP}");
@@ -375,6 +392,28 @@ mod tests {
         let argv: Vec<std::ffi::OsString> =
             ["trg", "--inflate-budget", "18446744073709551615G", "p", "f"]
                 .iter().map(|s| s.into()).collect();
+        assert!(parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn output_mode_precedence_is_most_suppressive_wins() {
+        assert_eq!(p(&["pat", "f"]).print.mode, print::Mode::Standard);
+        assert_eq!(p(&["-c", "pat", "f"]).print.mode, print::Mode::Count);
+        assert_eq!(p(&["-l", "pat", "f"]).print.mode, print::Mode::FilesWithMatches);
+        assert_eq!(p(&["-q", "pat", "f"]).print.mode, print::Mode::Quiet);
+        assert_eq!(p(&["--json", "pat", "f"]).print.mode, print::Mode::Json);
+        assert_eq!(p(&["-c", "-l", "pat", "f"]).print.mode, print::Mode::FilesWithMatches);
+        assert_eq!(p(&["-c", "-l", "-q", "pat", "f"]).print.mode, print::Mode::Quiet);
+        assert_eq!(p(&["--json", "-c", "pat", "f"]).print.mode, print::Mode::Count);
+    }
+
+    #[test]
+    fn color_parses_all_three_and_rejects_the_rest() {
+        assert_eq!(p(&["pat", "f"]).color, ColorArg::Auto);
+        assert_eq!(p(&["--color", "always", "pat", "f"]).color, ColorArg::Always);
+        assert_eq!(p(&["--color", "never", "pat", "f"]).color, ColorArg::Never);
+        let argv: Vec<std::ffi::OsString> =
+            ["trg", "--color", "nonsense", "pat", "f"].iter().map(|s| s.into()).collect();
         assert!(parse_from(argv).is_err());
     }
 
