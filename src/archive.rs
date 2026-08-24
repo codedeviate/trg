@@ -4,6 +4,7 @@
 //! own `Read`. That is what makes per-member line numbers, real member paths,
 //! and per-member binary detection all fall out for free.
 
+use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
@@ -19,15 +20,151 @@ pub struct Outcome {
     pub errors: Vec<String>,
 }
 
+/// Drops an archive's page-cache footprint when the reader that owns it dies.
+///
+/// An RAII guard rather than an explicit call after the member walk, for two
+/// reasons. It keeps `open_decoded`/`open_decoded_with` signatures unchanged,
+/// so nothing that already builds on them has to move; and, more importantly,
+/// it fires on the **error** paths too. A truncated archive — logrotate caught
+/// mid-write, the case `tgz_truncated` exists for — bails out of
+/// `for_each_member` early, and its pages are exactly the ones we still want
+/// gone.
+///
+/// The handle here is a `dup` of the one the reader is using. Both share one
+/// open file description, so `F_NOCACHE` set on either applies to both, and
+/// `posix_fadvise` addresses the inode's pages regardless of which fd it is
+/// called through.
+struct CacheGuard {
+    file: File,
+    drop_cache: bool,
+}
+
+impl Drop for CacheGuard {
+    fn drop(&mut self) {
+        crate::resource::finish(&self.file, self.drop_cache);
+    }
+}
+
+/// A reader that carries its `CacheGuard`. Field order is load-bearing: Rust
+/// drops fields in declaration order, so `inner` releases the decompressor and
+/// the underlying handle before `guard` issues `FADV_DONTNEED`.
+struct Guarded<R> {
+    inner: R,
+    /// Never read — it exists only for its `Drop`. Hence the underscore.
+    _guard: CacheGuard,
+}
+
+impl<R: Read> Read for Guarded<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+// The guard is only ever read at drop time; `File` is `Send`, so the whole
+// wrapper is, which is what lets it box into `Box<dyn Read + Send>` for the
+// worker threads of Task 10.
+impl<R: Read + Send> Guarded<R> {
+    fn boxed(inner: R, guard: CacheGuard) -> Box<dyn Read + Send>
+    where
+        R: 'static,
+    {
+        Box::new(Guarded { inner, _guard: guard })
+    }
+}
+
 /// Open a path and strip one layer of compression if present.
+///
+/// Signature frozen: Tasks 4 and 8 build on it. Cache-dropping behaviour is
+/// reached through [`open_decoded_dropping`].
 pub fn open_decoded(path: &Path) -> anyhow::Result<Box<dyn Read + Send>> {
-    let f = std::fs::File::open(path)?;
+    open_stream(path, false)
+}
+
+/// `open_decoded`, plus the option to hand the archive's pages back to the
+/// kernel once it has been read.
+///
+/// Cache-dropping is decided **here**, per input, and applies to archives
+/// only: `Format::Plain` is left alone no matter what the operator asked for.
+/// Apache holds its live logfiles open for append, and evicting those pages
+/// would evict cache another process is actively using — precisely the harm
+/// this feature exists to prevent.
+pub fn open_decoded_dropping(
+    path: &Path,
+    strategy: crate::inflate::Strategy,
+    drop_cache: bool,
+) -> anyhow::Result<Box<dyn Read + Send>> {
+    if let crate::inflate::Strategy::Buffer { capacity, ceiling } = strategy {
+        match inflate_whole(path, capacity, ceiling, drop_cache) {
+            Ok(bytes) => return Ok(Box::new(io::Cursor::new(bytes))),
+            Err(e) => {
+                // Never fail the search because the fast path did not fit:
+                // fall back to streaming, which always works.
+                eprintln!(
+                    "trg: {}: buffered inflate fell back to streaming ({e})",
+                    path.display()
+                );
+            }
+        }
+    }
+    open_stream(path, drop_cache)
+}
+
+/// The streaming open. `prepare` runs after the sniff rather than immediately
+/// after `File::open`, because until the head has been read we do not know
+/// whether this is an archive we are allowed to touch. The cost of that
+/// ordering is one page of a plain file left cached on macOS, against the
+/// alternative of setting `F_NOCACHE` on a live Apache log.
+fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + Send>> {
+    let f = File::open(path)?;
+    let dup = f.try_clone()?;
     let rdr = io::BufReader::with_capacity(64 * 1024, f);
     let (head, body) = peek(rdr)?;
-    Ok(match sniff(&head) {
-        Format::Gzip => Box::new(flate2::read::MultiGzDecoder::new(body)),
-        Format::Tar | Format::Plain => Box::new(body),
+
+    let format = sniff(&head);
+    let drop_cache = drop_cache && format != Format::Plain;
+    crate::resource::prepare(&dup, drop_cache);
+    let guard = CacheGuard { file: dup, drop_cache };
+
+    Ok(match format {
+        Format::Gzip => Guarded::boxed(flate2::read::MultiGzDecoder::new(body), guard),
+        Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     })
+}
+
+/// Whole-buffer inflate through a handle we control, so the compressed bytes
+/// are read under the same cache policy as the streaming path. `fs::read`
+/// inside `inflate::inflate_buffered` would open its own descriptor, which on
+/// macOS could never carry `F_NOCACHE`.
+///
+/// The guard is dropped at the end of this function rather than travelling
+/// with the returned `Cursor`: by then the file has been read whole and there
+/// is nothing left to keep warm.
+fn inflate_whole(
+    path: &Path,
+    capacity: usize,
+    ceiling: usize,
+    drop_cache: bool,
+) -> io::Result<Vec<u8>> {
+    let mut f = File::open(path)?;
+
+    let mut raw = vec![0u8; SNIFF_LEN];
+    let mut filled = 0;
+    while filled < raw.len() {
+        match f.read(&mut raw[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    raw.truncate(filled);
+
+    let drop_cache = drop_cache && sniff(&raw) != Format::Plain;
+    crate::resource::prepare(&f, drop_cache);
+    let guard = CacheGuard { file: f.try_clone()?, drop_cache };
+
+    f.read_to_end(&mut raw)?;
+    let out = crate::inflate::inflate_bytes(&raw, path, capacity, ceiling);
+    drop(guard);
+    out
 }
 
 /// Like `open_decoded`, but lets the caller choose whole-buffer inflate.
@@ -39,21 +176,14 @@ pub fn open_decoded(path: &Path) -> anyhow::Result<Box<dyn Read + Send>> {
 /// fails the search outright. With a small `--inflate-budget` and a large
 /// archive this fallback is the expected, common case, not an error: the
 /// message `inflate_buffered` produces says so.
+///
+/// Signature frozen alongside `open_decoded`; see [`open_decoded_dropping`]
+/// for the cache-dropping variant.
 pub fn open_decoded_with(
     path: &Path,
     strategy: crate::inflate::Strategy,
 ) -> anyhow::Result<Box<dyn Read + Send>> {
-    if let crate::inflate::Strategy::Buffer { capacity, ceiling } = strategy {
-        match crate::inflate::inflate_buffered(path, capacity, ceiling) {
-            Ok(bytes) => return Ok(Box::new(io::Cursor::new(bytes))),
-            Err(e) => {
-                // Never fail the search because the fast path did not fit:
-                // fall back to streaming, which always works.
-                eprintln!("trg: {}: buffered inflate fell back to streaming ({e})", path.display());
-            }
-        }
-    }
-    open_decoded(path)
+    open_decoded_dropping(path, strategy, false)
 }
 
 /// Read the sniff window, then hand back a reader with those bytes replayed in

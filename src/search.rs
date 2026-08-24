@@ -137,8 +137,11 @@ pub fn search_archive(
     globs: Option<&globset::GlobSet>,
     max_count: Option<u64>,
     strategy: crate::inflate::Strategy,
+    drop_cache: bool,
 ) -> crate::archive::Outcome {
-    let rdr = match crate::archive::open_decoded_with(path, strategy) {
+    // `drop_cache` is a request, not a decision: `open_decoded_dropping`
+    // narrows it to archives, so a plain live logfile is never evicted.
+    let rdr = match crate::archive::open_decoded_dropping(path, strategy, drop_cache) {
         Ok(r) => r,
         Err(e) => {
             let mut o = crate::archive::Outcome::default();

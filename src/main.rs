@@ -3,6 +3,15 @@ use trg::{print, search};
 
 fn main() -> anyhow::Result<()> {
     let args = trg::cli::parse()?;
+
+    // Stay out of the way before doing any work: a nice'd, idle-I/O process
+    // uses spare capacity and is preempted the moment Apache wants the core.
+    trg::resource::set_priority(args.nice);
+    trg::resource::set_io_idle();
+    // Read once at startup, no feedback loop. Task 10's scheduler consumes
+    // this; nothing here is concurrent yet.
+    let _jobs = trg::resource::clamp_jobs(args.jobs, args.load_limit);
+
     let matcher = search::build_matcher(&args.patterns, &args.search)?;
     let mut searcher = search::build_searcher(&args.search);
 
@@ -30,6 +39,7 @@ fn main() -> anyhow::Result<()> {
             globs.as_ref(),
             args.search.max_count,
             strategy,
+            args.drop_cache,
         );
         if printer.has_written() {
             matched = true;

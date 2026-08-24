@@ -101,13 +101,26 @@ fn buffer_within_budget(path: &Path, budget: u64, hint: Option<u64>) -> Strategy
 /// falls back to streaming.
 pub fn inflate_buffered(path: &Path, capacity: usize, ceiling: usize) -> io::Result<Vec<u8>> {
     let raw = std::fs::read(path)?;
+    inflate_bytes(&raw, path, capacity, ceiling)
+}
+
+/// The retry loop of [`inflate_buffered`], separated from the read so that a
+/// caller which has already read the compressed bytes — `archive.rs` does,
+/// through a file handle it has run `resource::prepare` on — does not have to
+/// open and read the file a second time. `path` is used only for messages.
+pub fn inflate_bytes(
+    raw: &[u8],
+    path: &Path,
+    capacity: usize,
+    ceiling: usize,
+) -> io::Result<Vec<u8>> {
     let mut cap = capacity.max(MIN_CAPACITY as usize);
     let ceiling = ceiling.max(cap);
 
     loop {
         let mut d = libdeflater::Decompressor::new();
         let mut out = vec![0u8; cap];
-        match d.gzip_decompress(&raw, &mut out) {
+        match d.gzip_decompress(raw, &mut out) {
             Ok(n) => {
                 out.truncate(n);
                 return Ok(out);

@@ -100,3 +100,45 @@ pub fn tgz_nested_gz(name: &str, inner: &str, body: &[u8]) -> Fixture {
     let inner_gz = gzip(body);
     tgz(name, &[(inner, inner_gz.as_slice())])
 }
+
+/// Per-file page-cache residency via mmap + mincore. Linux only: this is a
+/// direct port of the `resident.c` used to produce the spec's measurements.
+#[cfg(target_os = "linux")]
+pub fn resident_pages(path: &std::path::Path) -> (usize, usize) {
+    use std::os::unix::io::AsRawFd;
+    let file = std::fs::File::open(path).unwrap();
+    let len = file.metadata().unwrap().len() as usize;
+    assert!(len > 0, "cannot measure residency of an empty file");
+    let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let np = len.div_ceil(ps);
+    let m = unsafe {
+        libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ,
+                   libc::MAP_SHARED, file.as_raw_fd(), 0)
+    };
+    assert_ne!(m, libc::MAP_FAILED, "mmap failed");
+    let mut vec = vec![0u8; np];
+    let rc = unsafe { libc::mincore(m, len, vec.as_mut_ptr() as *mut _) };
+    assert_eq!(rc, 0, "mincore failed");
+    let res = vec.iter().filter(|b| *b & 1 == 1).count();
+    unsafe { libc::munmap(m, len) };
+    (res, np)
+}
+
+/// Drop a file's pages so each measurement starts from a known state.
+/// `/proc/sys/vm/drop_caches` is read-only in a container, so this is the
+/// only reliable way to reset.
+#[cfg(target_os = "linux")]
+pub fn evict(path: &std::path::Path) {
+    use std::os::unix::io::AsRawFd;
+    let file = std::fs::File::open(path).unwrap();
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
+}
+
+/// ~8 MB of mostly-unique log text, so residency figures are unambiguous.
+pub fn bulky_log() -> Vec<u8> {
+    (0..300_000u32)
+        .flat_map(|i| format!("2026-08-24T00:00:00Z req {i} GET /path/{i}?q={i}\n").into_bytes())
+        .collect()
+}
