@@ -57,7 +57,7 @@ fn list_members_respects_globs_and_searches_nothing() {
         &[("logs/x.access.log", b"whatever\n"), ("logs/x.error.log", b"whatever\n")],
     );
     let (out, _, _) =
-        run(&["-T", "-g", "*.access.log", "unused-pattern", f.path.to_str().unwrap()]);
+        run(&["-T", "-g", "*.access.log", f.path.to_str().unwrap()]);
     assert!(out.contains("logs/x.access.log"), "got {out}");
     assert!(!out.contains("logs/x.error.log"));
     assert!(!out.contains(":1:"), "-T must not print match lines: {out}");
@@ -66,7 +66,7 @@ fn list_members_respects_globs_and_searches_nothing() {
 #[test]
 fn list_members_with_no_members_is_a_clean_one() {
     let f = helpers::tgz("le.tgz", &[("logs/a.log", b"whatever\n")]);
-    let (out, err, c) = run(&["-T", "-g", "*.nomatch", "unused", f.path.to_str().unwrap()]);
+    let (out, err, c) = run(&["-T", "-g", "*.nomatch", f.path.to_str().unwrap()]);
     assert!(out.is_empty(), "got {out}");
     assert!(err.is_empty(), "got {err}");
     assert_eq!(c, Some(1));

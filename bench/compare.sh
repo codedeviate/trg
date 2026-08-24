@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compares trg against the inflate floor, zgrep and rg on wall clock, CPU,
-# peak RSS and page-cache residency.
+# Compares trg against the inflate floor, zgrep and rg on wall clock, CPU and
+# page-cache residency.
 #
 #   ./bench/compare.sh [CORPUS_DIR] [PATTERN]
 #
@@ -14,10 +14,16 @@
 # the second tool measured would read 610 MB out of RAM and win on wall clock
 # for reasons that have nothing to do with the tool.
 #
-# CPU and peak RSS come from wait4(2) on the child, so they cover the process
-# and the descendants it waited for — that is how a `gzip | grep` pipeline
-# such as zgrep gets accounted. ru_maxrss is a maximum over the pipeline's
-# members, not a sum.
+# CPU comes from wait4(2) on the child, so it covers the process and the
+# descendants it waited for — that is how a `gzip | grep` pipeline such as
+# zgrep gets accounted.
+#
+# There is deliberately no peak-RSS column. wait4's ru_maxrss cannot measure it
+# here: CPython spawns via posix_spawn/vfork, so the child shares the parent's
+# mm until execve and inherits python3's own high-water mark — every row floored
+# at ~11 MB regardless of the tool. Measure peak RSS by polling /proc/PID/VmHWM
+# in a separate pass; a wrong number in a committed script outlives the note
+# explaining that it is wrong.
 set -euo pipefail
 
 corpus=${1:-/tmp/trgbench/corpus}
@@ -98,14 +104,13 @@ def run(label, cmd):
         code = os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
         p.returncode = code  # the child is already reaped; keep Popen quiet
         after = resident_bytes()
-        row = (wall, ru.ru_utime, ru.ru_stime, ru.ru_maxrss / 1024.0,
-               after / 1e6, cold / 1e6, code)
+        row = (wall, ru.ru_utime, ru.ru_stime, after / 1e6, cold / 1e6, code)
         if best is None or row[1] + row[2] < best[1] + best[2]:
             best = row
-    wall, u, s, rss, res, cold, code = best
+    wall, u, s, res, cold, code = best
     warn = "" if cold < 8e6 else f"  !! {cold:.0f} MB still cached before the run"
     print(f"{label:<34} {wall:7.2f} {u:7.2f} {s:6.2f} {u + s:7.2f} "
-          f"{rss:8.1f} {res:9.1f}  {code}{warn}", flush=True)
+          f"{res:9.1f}  {code}{warn}", flush=True)
 
 
 raw = sum(os.path.getsize(f) for f in files)
@@ -113,8 +118,8 @@ print(f"corpus: {len(files)} archives, {raw / 1e6:.0f} MB compressed, pattern {p
 print(f"reps: {reps} (best by total CPU); cores: {os.cpu_count()}")
 print()
 print(f"{'strategy':<34} {'wall':>7} {'user':>7} {'sys':>6} {'cpu':>7} "
-      f"{'peakRSS':>8} {'cached':>9}  rc")
-print("-" * 92)
+      f"{'cached':>9}  rc")
+print("-" * 83)
 
 g = os.path.join(corpus, "*.tgz")
 run("cat > /dev/null (I/O floor)", f"cat {g}")

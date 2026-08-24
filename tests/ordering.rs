@@ -717,3 +717,90 @@ fn a_panicking_emit_does_not_wedge_the_pool() {
 
     assert!(unwound, "emit's panic should have propagated out of run, not been swallowed");
 }
+
+/// The third deadlock of the same class, and the reason the guard is structural
+/// rather than an argument about the current caller.
+///
+/// `Completion` is constructed only *after* a worker has claimed a job, so a
+/// worker that dies before that — in `make_worker()`, or on the state lock, or
+/// in `space.wait()` — used to exit without advancing `finished` and without
+/// notifying. With every worker gone that way, the collector blocked on
+/// `wake.wait` forever and `thread::scope` never returned.
+///
+/// Bounded by `within(..)` so a regression fails in seconds instead of wedging
+/// the suite. The "deliberate test panic in make_worker" lines in this test's
+/// stderr are expected, one per worker.
+#[test]
+fn a_panicking_make_worker_does_not_hang_the_pool() {
+    const JOBS: usize = 6;
+
+    let (ok, got) = within(20, || {
+        let seen = Mutex::new(Vec::new());
+        let r = trg::sched::run(
+            jobs(JOBS),
+            cfg(4, true),
+            buf,
+            || -> () { panic!("deliberate test panic in make_worker") },
+            |_job, _c: &mut (), _b| trg::archive::Outcome::default(),
+            |done: &Done| {
+                seen.lock().unwrap().push((done.index, done.outcome.errors.clone()));
+                Ok(())
+            },
+        );
+        (r.is_ok(), seen.into_inner().unwrap())
+    });
+
+    assert!(ok, "a dead worker pool is a partial run, not a write error");
+    assert_eq!(
+        got.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        (0..JOBS).collect::<Vec<_>>(),
+        "every job must be accounted for, in order"
+    );
+    // The whole point of not hanging: the archives nobody read are *reported*,
+    // so `main` sets `partial` and the run exits 2. Silence here would be a 1 —
+    // "everything read, nothing found" — for a run that read nothing at all.
+    for (i, errs) in &got {
+        assert_eq!(errs.len(), 1, "job {i} should report exactly one error, got {errs:?}");
+        assert!(errs[0].contains("not read"), "job {i}: unhelpful error text {errs:?}");
+    }
+}
+
+/// The surviving workers must still do the whole job list: one worker whose
+/// `make_worker` panics is a fault in that worker, not in the run.
+#[test]
+fn one_dead_worker_does_not_cost_the_run_its_archives() {
+    const JOBS: usize = 40;
+    let built = Arc::new(AtomicUsize::new(0));
+    let b = Arc::clone(&built);
+
+    let (ok, got) = within(20, || {
+        let seen = Mutex::new(Vec::new());
+        let r = trg::sched::run(
+            jobs(JOBS),
+            cfg(4, true),
+            buf,
+            move || {
+                // Exactly one worker dies; the other three carry the list.
+                if b.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+                    panic!("deliberate test panic in make_worker");
+                }
+            },
+            |_job, _c: &mut (), _b| trg::archive::Outcome::default(),
+            |done: &Done| {
+                seen.lock().unwrap().push((done.index, done.outcome.errors.clone()));
+                Ok(())
+            },
+        );
+        (r.is_ok(), seen.into_inner().unwrap())
+    });
+
+    assert!(ok);
+    assert_eq!(
+        got.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        (0..JOBS).collect::<Vec<_>>(),
+        "the surviving workers must cover every job, in order"
+    );
+    let errs: Vec<_> = got.iter().filter(|(_, e)| !e.is_empty()).collect();
+    assert!(errs.is_empty(), "nothing went unread, so nothing should be reported: {errs:?}");
+    assert!(built.load(AtomicOrdering::SeqCst) >= 4, "all four workers should have started");
+}

@@ -69,11 +69,24 @@
 //!
 //! A panicking job must not be able to hang the process — during an incident a
 //! hang looks like a slow search and gets waited on, which is strictly worse
-//! than a crash. Two independent mechanisms guarantee it cannot:
-//! [`catch_unwind`](std::panic::catch_unwind) around the call to `work`, which
-//! turns a panic into an ordinary error on that archive, and a `Completion`
-//! drop guard that advances the finished count and wakes the collector even if
-//! a worker unwinds anyway.
+//! than a crash. Four independent mechanisms guarantee it cannot, one per place
+//! a thread can leave unexpectedly:
+//!
+//! - [`catch_unwind`](std::panic::catch_unwind) around the call to `work`,
+//!   which turns a panic into an ordinary error on that archive, and a second
+//!   one around `make_worker`, which is likewise the caller's closure.
+//! - a `Completion` drop guard that advances the finished count and wakes the
+//!   collector even if a worker unwinds anyway, once it has claimed a job.
+//! - a `WorkerLife` drop guard covering the rest of the thread's life —
+//!   everything before and between jobs, where `Completion` does not exist yet.
+//!   When the last worker goes with jobs still unclaimed, the collector stops
+//!   waiting and reports those archives as unread, so the run is a 2.
+//! - a `Teardown` drop guard on the collector, releasing workers parked on
+//!   backpressure when it leaves, including by unwinding out of `emit`.
+//!
+//! Each guards a different exit; none of them is redundant with the others, and
+//! the module has hit this failure shape three times, so a new path out of a
+//! thread needs a guard rather than an argument that it cannot be taken.
 //!
 //! `emit` returns `io::Result`, and the first error stops the run: no further
 //! job is started and [`run`] returns the error. That is what makes
@@ -125,6 +138,11 @@ struct Shared {
     batch_bytes: usize,
     /// Jobs finished so far, so the collector knows when to stop waiting.
     finished: usize,
+    /// Worker threads still running. Decremented by [`WorkerLife`] on every
+    /// exit path, normal or unwinding, so that "nobody is left to finish the
+    /// outstanding jobs" is a state the collector can observe rather than a
+    /// wait it never wakes from.
+    live_workers: usize,
 }
 
 /// Advances the finished count and wakes the collector on drop, so that a
@@ -152,6 +170,37 @@ impl Drop for Completion<'_> {
         // propagate a panic — noisy, but not a hang.
         if let Ok(mut st) = self.state.lock() {
             st.finished += 1;
+        }
+        self.wake.notify_all();
+    }
+}
+
+/// Decrements the live-worker count and wakes the collector on drop.
+///
+/// [`Completion`] covers a worker that unwinds *after* it has claimed a job.
+/// This covers the rest of the thread's life, which [`Completion`] cannot: it
+/// is constructed as the thread's first act, before `make_worker()` and before
+/// the first `state.lock()`, so a panic in either — or in `space.wait()` on a
+/// poisoned lock — still tells the collector that this worker is gone.
+///
+/// Without it the collector waits at `wake.wait` for a notification no living
+/// thread will send, and `thread::scope` never returns: a hang, which during an
+/// incident looks like a slow search and gets waited on. This is the third
+/// instance of that shape in this module, after the panicking worker and the
+/// collector unwinding out of `emit`, so it is guarded structurally rather than
+/// by arguing that the current caller does not panic — `run` is public API and
+/// `make_worker` is the caller's closure.
+struct WorkerLife<'a> {
+    state: &'a Mutex<Shared>,
+    wake: &'a Condvar,
+}
+
+impl Drop for WorkerLife<'_> {
+    fn drop(&mut self) {
+        // Never `unwrap`: same discipline as `Completion` — this `Drop` runs
+        // during an unwind, and panicking there aborts the process.
+        if let Ok(mut st) = self.state.lock() {
+            st.live_workers -= 1;
         }
         self.wake.notify_all();
     }
@@ -297,6 +346,8 @@ where
         order.sort_by_key(|&p| jobs[p].index);
     }
 
+    let live = workers.min(n);
+
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let state = Mutex::new(Shared {
@@ -306,6 +357,9 @@ where
         held: 0,
         batch_bytes: 0,
         finished: 0,
+        // Seeded before a single thread is spawned, so it only ever counts
+        // down: the collector cannot mistake "not started yet" for "all gone".
+        live_workers: live,
     });
     let wake = Condvar::new();
     // Workers wait here for the collector to free output bytes. A second
@@ -315,8 +369,6 @@ where
 
     let mut write_err: Option<std::io::Error> = None;
 
-    let live = workers.min(n);
-
     std::thread::scope(|scope| {
         for _ in 0..live {
             let (next, stop, state, wake) = (&next, &stop, &state, &wake);
@@ -324,7 +376,20 @@ where
             let (jobs, work, make_buffer, make_worker) =
                 (&jobs, &work, &make_buffer, &make_worker);
             scope.spawn(move || {
-                let mut ctx = make_worker();
+                // First act of the thread, so every later line is covered.
+                let _life = WorkerLife { state, wake };
+                // `make_worker` is the caller's closure and may panic. Catching
+                // it here keeps the panic from propagating out of the scope —
+                // which would turn a per-worker fault into a process-level one
+                // — and lets the surviving workers claim the whole job list.
+                // If none survive, `_life` above is what stops the collector
+                // waiting for them.
+                let mut ctx = match std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(&make_worker),
+                ) {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
                 loop {
                     // Producer-side backpressure. Waiting *before* claiming a
                     // job means a blocked worker holds nothing at all — no
@@ -388,6 +453,7 @@ where
         let mut batch: Vec<Done> = Vec::new();
 
         'collect: while emitted_count < n {
+            let mut spill_notices = 0usize;
             {
                 let mut st = state.lock().unwrap();
                 loop {
@@ -414,10 +480,14 @@ where
                         // Checked every pass, not only when blocked, so a fast
                         // producer cannot outrun the cap while we are emitting.
                         if st.held > spill_bytes {
-                            eprintln!(
-                                "trg: held output exceeded {spill_bytes} bytes; \
-                                 flushing out of order"
-                            );
+                            // Counted here, printed after the lock is dropped.
+                            // Writing to stderr under the state mutex stalls
+                            // every worker behind a slow terminal, and a failed
+                            // stderr write panics *inside* the lock: poisoned
+                            // under unwinding, an abort under `panic = "abort"`.
+                            // The lock is for moves in and out of `slots` and
+                            // `pool`, and nothing else.
+                            spill_notices += 1;
                             flush_parked(&mut st, &order, &mut emitted, head, &mut batch);
                         }
                     } else {
@@ -426,6 +496,12 @@ where
                                 let len = d.buffer.as_slice().len();
                                 st.held -= len;
                                 st.batch_bytes += len;
+                                // `order` is the identity here, so position and
+                                // order-index coincide. Marked in this mode too
+                                // so `emitted` means "taken" on both paths —
+                                // the stall sweep below needs to know which
+                                // positions are still outstanding.
+                                emitted[p] = true;
                                 batch.push(d);
                             }
                         }
@@ -443,8 +519,47 @@ where
                     if st.finished >= n {
                         break;
                     }
+                    // Jobs outstanding and not one worker left to claim them.
+                    // Only reachable when a worker died on a path neither
+                    // `run_job`'s `catch_unwind` nor `Completion` covers — a
+                    // poisoned lock, say. Waiting here is the hang; instead,
+                    // take whatever landed and report the rest as unread, which
+                    // `main` turns into a 2. Never a silent short read.
+                    if st.live_workers == 0 {
+                        for (h, flag) in emitted.iter_mut().enumerate() {
+                            if *flag {
+                                continue;
+                            }
+                            *flag = true;
+                            let p = order[h];
+                            match st.slots[p].take() {
+                                Some(d) => {
+                                    let len = d.buffer.as_slice().len();
+                                    st.held -= len;
+                                    st.batch_bytes += len;
+                                    batch.push(d);
+                                }
+                                // `make_buffer` under the lock is safe *here*
+                                // and nowhere else: there are no workers left
+                                // to stall. The buffer stays empty, so it costs
+                                // `recycle` nothing.
+                                None => batch.push(Done {
+                                    index: jobs[p].index,
+                                    buffer: make_buffer(),
+                                    outcome: unclaimed(&jobs[p]),
+                                }),
+                            }
+                        }
+                        break;
+                    }
                     st = wake.wait(st).unwrap();
                 }
+            }
+
+            for _ in 0..spill_notices {
+                eprintln!(
+                    "trg: held output exceeded {spill_bytes} bytes; flushing out of order"
+                );
             }
 
             // Unreachable per the invariant above; a `break` rather than a spin
@@ -476,6 +591,18 @@ where
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// The outcome for a job no worker ever claimed. An `errors` entry is the only
+/// partial-run signal `main` reads, so this is what makes the stalled run a 2
+/// rather than a confident "no matches, everything read".
+fn unclaimed(job: &Job) -> crate::archive::Outcome {
+    let mut o = crate::archive::Outcome::default();
+    o.errors.push(format!(
+        "{}: every worker exited before this archive was searched; not read",
+        job.path.display()
+    ));
+    o
 }
 
 /// Return a buffer to the pool so its allocation is reused, unless it grew past

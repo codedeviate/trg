@@ -10,8 +10,13 @@ pub const HELP: &str = "\
 trg — search inside .tgz log archives
 
 USAGE:
-    trg [OPTIONS] PATTERN [PATH...]
-    trg [OPTIONS] -e PATTERN... [PATH...]
+    trg [OPTIONS] PATTERN PATH...
+    trg [OPTIONS] -e PATTERN... PATH...
+    trg [OPTIONS] -T PATH...
+
+At least one PATH is required. trg never searches the current directory by
+default: a silent walk of $PWD is not a safe guess for a tool whose exit 1
+is a claim that the logs are clean.
 
 MATCHING (same meaning as ripgrep):
     -e, --regexp PAT      add a pattern; repeatable
@@ -42,9 +47,9 @@ OUTPUT (same meaning as ripgrep):
 
 ARCHIVES:
     -g, --glob PAT        filter MEMBERS inside archives; repeatable
-    -T, --list-members    list member paths without searching; lists every
-                          member, including ones a search skips as binary.
-                          Takes no pattern: `trg -T archive.tgz` lists it
+    -T, --list-members    list member paths without searching. Takes no
+                          PATTERN at all: every positional is a PATH, so
+                          `trg -T *.tgz` lists all of them
         --archive-sep C   separator in archive:member:line (default ':')
         --no-sort         allow output in completion order
 
@@ -66,6 +71,16 @@ EXIT CODES:
     0  matches found, everything read
     1  no matches, everything read
     2  something went unread — never trust a 1 you did not get
+
+NOTES (documented, and surprising the first time):
+    -T lists every member, including ones a search skips as binary.
+    Two directories symlinking the same file search it once (identity dedup).
+    An intact archive behind a corrupt gzip trailer is a 0; truncation is
+      still caught and is a 2.
+    --turbo's ordered output is bounded by neither --inflate-budget nor the
+      spill cap; peak RSS grows with the match volume held in order.
+    On a broken pipe (`| head`) trg stops early and exits 0, leaving later
+      archives unread.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,11 +165,19 @@ where
     let mut explicit_jobs = false;
     let mut explicit_nice = false;
     let mut ctx_both: Option<usize> = None;
+    // Positionals are banked rather than assigned as they arrive, so the rule
+    // that splits PATTERN from PATH does not depend on whether `-T` or `-e`
+    // happened to come before or after them on the command line.
+    let mut positionals: Vec<OsString> = Vec::new();
+    let mut explicit_patterns = false;
 
     let mut p = lexopt::Parser::from_iter(argv);
     while let Some(arg) = p.next()? {
         match arg {
-            Short('e') | Long("regexp") => a.patterns.push(p.value()?.string()?),
+            Short('e') | Long("regexp") => {
+                a.patterns.push(p.value()?.string()?);
+                explicit_patterns = true;
+            }
             Short('i') | Long("ignore-case") => a.search.case_insensitive = true,
             Short('S') | Long("smart-case") => a.search.smart_case = true,
             Short('w') | Long("word-regexp") => a.search.word = true,
@@ -238,13 +261,7 @@ where
                 std::process::exit(0);
             }
 
-            Value(v) => {
-                if a.patterns.is_empty() {
-                    a.patterns.push(v.string()?);
-                } else {
-                    a.paths.push(PathBuf::from(v));
-                }
-            }
+            Value(v) => positionals.push(v),
             other => return Err(other.unexpected().into()),
         }
     }
@@ -255,7 +272,6 @@ where
         a.search.before = n;
         a.search.after = n;
     }
-    a.print.line_numbers = a.search.line_numbers;
     // Collapse the output-mode flags into exactly one mode here, so nothing
     // downstream has to re-derive the precedence. Most suppressive wins: `-q`
     // asked for no output at all, and honouring the noisier flag over it would
@@ -272,23 +288,41 @@ where
         print::Mode::Standard
     };
 
-    // `-T` asks a question about the tar headers, not about the members'
-    // contents: `list_members` never consults the matcher at all. So it needs
-    // no pattern — but the positional rule above hands the first positional to
-    // the pattern slot regardless, which made `trg -T archive.tgz` swallow the
-    // archive path as a pattern, find no paths to walk, and exit 1 in silence.
-    // The first natural use of a documented flag did nothing.
+    // Split the banked positionals into PATTERN and PATH.
     //
-    // Exactly one positional and no `-e` is unambiguous: there is nothing for a
-    // pattern to do, so it is the path. Two or more keep the `PATTERN PATH...`
-    // reading, so `trg -T pat archive.tgz` still works.
-    if a.list_members && a.paths.is_empty() && a.patterns.len() == 1 {
-        a.paths.push(PathBuf::from(a.patterns.pop().expect("len checked")));
+    // `-T` asks a question about the tar headers, not about the members'
+    // contents: `list_members` never consults the matcher at all. So it takes
+    // no pattern *whatsoever* and every positional is a path. The earlier rule
+    // — "exactly one positional is a path" — closed `trg -T archive.tgz` but
+    // not `trg -T *.tgz`, where the shell supplies several and the first
+    // archive was silently eaten as a pattern it would never be read for. An
+    // argument the mode cannot use has no unambiguous reading, so it does not
+    // get one; `trg -T -e pat a.tgz` still parses, because `-e` is explicit.
+    //
+    // Otherwise the first positional is the pattern unless `-e` already
+    // supplied one, matching ripgrep.
+    let mut rest = positionals.into_iter();
+    if !a.list_members
+        && !explicit_patterns
+        && let Some(first) = rest.next()
+    {
+        a.patterns.push(first.string()?);
     }
+    a.paths.extend(rest.map(PathBuf::from));
 
     // `-T` is the one mode with no pattern to be missing.
     if a.patterns.is_empty() && !a.list_members {
         anyhow::bail!("no pattern given\n\n{HELP}");
+    }
+    // A run with nothing to read must never reach the exit-code contract: with
+    // no paths the job list is empty, the scheduler returns immediately, and
+    // `matched: false, partial: false` is a 1 — "I read everything and the logs
+    // are clean" for a run that opened nothing. `trg needle` with the path
+    // forgotten, and `trg needle $LOGS` with $LOGS unset, both landed there.
+    // Searching the working directory instead, as ripgrep does, would be worse:
+    // a confident 1 from a directory nobody named.
+    if a.paths.is_empty() {
+        anyhow::bail!("no path given: name at least one archive or directory\n\n{HELP}");
     }
     Ok(a)
 }
@@ -445,11 +479,36 @@ mod tests {
         assert_eq!(a.paths, vec![PathBuf::from("archive.tgz")]);
     }
 
+    /// The trap the one-positional rule did not close: a shell glob supplies
+    /// several positionals, and the first archive was eaten as a pattern `-T`
+    /// never reads. Under `-T` every positional is a path, no exceptions.
     #[test]
-    fn dash_t_with_a_pattern_and_a_path_still_parses_the_old_way() {
-        let a = p(&["-T", "pat", "archive.tgz"]);
+    fn dash_t_takes_every_positional_as_a_path() {
+        let a = p(&["-T", "a.tgz", "b.tgz", "c.tgz"]);
+        assert!(a.patterns.is_empty(), "-T takes no pattern, got {:?}", a.patterns);
+        assert_eq!(
+            a.paths,
+            vec![PathBuf::from("a.tgz"), PathBuf::from("b.tgz"), PathBuf::from("c.tgz")]
+        );
+    }
+
+    /// Flag order must not change the reading: `-T` after the positionals is
+    /// the same command.
+    #[test]
+    fn dash_t_after_the_positionals_parses_the_same() {
+        let a = p(&["a.tgz", "b.tgz", "-T"]);
+        assert!(a.patterns.is_empty(), "got {:?}", a.patterns);
+        assert_eq!(a.paths, vec![PathBuf::from("a.tgz"), PathBuf::from("b.tgz")]);
+    }
+
+    /// `-e` after a positional still makes that positional a path, so the
+    /// pattern slot is decided by the whole command line rather than by which
+    /// argument arrived first.
+    #[test]
+    fn an_explicit_e_makes_every_positional_a_path_whatever_the_order() {
+        let a = p(&["a.tgz", "-e", "pat", "b.tgz"]);
         assert_eq!(a.patterns, vec!["pat"]);
-        assert_eq!(a.paths, vec![PathBuf::from("archive.tgz")]);
+        assert_eq!(a.paths, vec![PathBuf::from("a.tgz"), PathBuf::from("b.tgz")]);
     }
 
     /// `-e` fills the pattern slot explicitly, so the lone positional is a path
@@ -461,15 +520,39 @@ mod tests {
         assert_eq!(a.paths, vec![PathBuf::from("archive.tgz")]);
     }
 
+    fn err(args: &[&str]) -> String {
+        let argv: Vec<std::ffi::OsString> =
+            std::iter::once("trg".into()).chain(args.iter().map(|s| s.into())).collect();
+        match parse_from(argv) {
+            Ok(_) => panic!("expected a usage error, got a parse"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
     /// Only `-T` is exempt. Everything else still refuses to run patternless
     /// rather than searching for the empty string.
     #[test]
     fn a_missing_pattern_is_still_an_error_without_dash_t() {
-        let argv: Vec<std::ffi::OsString> =
-            ["trg", "archive.tgz"].iter().map(|s| s.into()).collect();
-        assert!(parse_from(argv).is_ok(), "one positional is the pattern");
-        let argv: Vec<std::ffi::OsString> = ["trg"].iter().map(|s| s.into()).collect();
-        assert!(parse_from(argv).is_err(), "no positionals at all must fail");
+        assert!(err(&[]).contains("no pattern given"));
+        assert!(err(&["-e", "pat"]).contains("no path given"), "pattern present, path missing");
+    }
+
+    /// The blocker: with no path there is nothing to read, and a run that read
+    /// nothing must not be able to reach the exit-code contract — an empty job
+    /// list produced `matched: false, partial: false`, which is a 1.
+    #[test]
+    fn a_missing_path_is_a_usage_error_not_an_empty_clean_run() {
+        assert!(err(&["needle"]).contains("no path given"), "pattern with no path");
+        assert!(err(&["-T"]).contains("no path given"), "-T with no path");
+        assert!(err(&["-q", "needle"]).contains("no path given"), "-q must not hide it");
+    }
+
+    /// A pattern is still a pattern, so this is the *path* that is missing —
+    /// the realistic form is `trg needle $LOGS` with `$LOGS` unset, which the
+    /// shell collapses to exactly this.
+    #[test]
+    fn one_positional_is_the_pattern_and_leaves_no_path() {
+        assert!(err(&["archive.tgz"]).contains("no path given"));
     }
 
     #[test]

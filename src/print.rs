@@ -28,8 +28,6 @@ pub enum Mode {
 }
 
 pub struct PrintOpts {
-    pub heading: bool,
-    pub line_numbers: bool,
     pub only_matching: bool,
     pub column: bool,
     pub mode: Mode,
@@ -41,8 +39,6 @@ pub struct PrintOpts {
 impl Default for PrintOpts {
     fn default() -> Self {
         Self {
-            heading: false,
-            line_numbers: true,
             only_matching: false,
             column: false,
             mode: Mode::Standard,
@@ -74,7 +70,12 @@ pub fn build<'a>(o: &PrintOpts, buf: &'a mut Buffer) -> Printer<'a> {
         Mode::Standard => Printer::Standard(
             StandardBuilder::new()
                 .path(true)
-                .heading(o.heading)
+                // Never grouped under a path heading: every line is prefixed
+                // `archive:member:line`, and a heading would hide the archive
+                // the line came from — the one thing the operator is reading
+                // for. `-n`/`-N` reach the printer through `SearchOpts`, which
+                // is what `Searcher` consults, so there is nothing to mirror.
+                .heading(false)
                 .only_matching(o.only_matching)
                 .column(o.column)
                 .stats(false)

@@ -25,6 +25,43 @@ fn no_match_with_everything_read_is_one() {
     assert_eq!(run(&["NEEDLE", f.path.to_str().unwrap()]).2, Some(1));
 }
 
+/// The blocker this suite had no case for at all: a run given nothing to read.
+///
+/// With no path the job list is empty, the scheduler returns at once, and
+/// `matched: false, partial: false` is a **1** — the strongest claim the tool
+/// can make, "I read every archive and the logs are clean", from a run that
+/// opened no file. `trg needle` with the path forgotten and `trg needle $LOGS`
+/// with `$LOGS` unset are the same command line after the shell is done.
+#[test]
+fn no_path_at_all_is_two_never_one() {
+    for args in [&["needle"][..], &["-T"][..], &["-q", "needle"][..], &["-e", "needle"][..]] {
+        let (out, err, code) = run(args);
+        assert_eq!(code, Some(2), "{args:?} read nothing and must not claim otherwise");
+        assert!(out.is_empty(), "{args:?} printed to stdout: {out}");
+        assert!(err.contains("no path"), "{args:?} must say what is missing: {err}");
+    }
+}
+
+/// And it must stay a usage error rather than becoming a walk of `$PWD`:
+/// searching a directory nobody named would turn the same typo into a
+/// confident 1 from the wrong data.
+#[test]
+fn a_missing_path_does_not_fall_back_to_the_working_directory() {
+    let f = helpers::tgz("cwd.tgz", &[("logs/a.log", b"NEEDLE here\n")]);
+    let (out, _, code) = {
+        use std::process::{Command, Stdio};
+        let o = Command::new(env!("CARGO_BIN_EXE_trg"))
+            .arg("NEEDLE")
+            .current_dir(f.path.parent().unwrap())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned(), (), o.status.code())
+    };
+    assert_eq!(code, Some(2), "a bare pattern must not search the cwd");
+    assert!(out.is_empty(), "nothing should have been searched: {out}");
+}
+
 #[test]
 fn a_missing_file_is_two_not_one() {
     assert_eq!(run(&["NEEDLE", "/no/such/archive.tgz"]).2, Some(2));
@@ -85,7 +122,11 @@ fn silent_and_summary_modes_still_report_unread_data_as_two() {
     let p = f.path.to_str().unwrap();
     for mode in [&["-q"][..], &["-c"][..], &["-l"][..], &["-T"][..], &["--json"][..]] {
         let mut args: Vec<&str> = mode.to_vec();
-        args.extend_from_slice(&["NEEDLE", p]);
+        // `-T` takes no pattern at all: every positional is a path.
+        if mode != ["-T"] {
+            args.push("NEEDLE");
+        }
+        args.push(p);
         let (_, err, code) = run(&args);
         assert_eq!(code, Some(2), "{mode:?} on a truncated archive must be 2, stderr={err}");
     }
