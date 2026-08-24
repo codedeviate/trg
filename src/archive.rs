@@ -32,16 +32,19 @@ pub fn open_decoded(path: &Path) -> anyhow::Result<Box<dyn Read + Send>> {
 
 /// Like `open_decoded`, but lets the caller choose whole-buffer inflate.
 ///
-/// `Strategy::Buffer` is only ever a fast path: a failure there (the ISIZE
-/// hint lied and the retry loop in `inflate_buffered` still ran out of room)
-/// falls back to `open_decoded`'s streaming path, which always works, and
-/// never fails the search outright.
+/// `Strategy::Buffer` is only ever a fast path: a failure there — the ISIZE
+/// hint lied and the retry loop in `inflate_buffered` hit the budget-derived
+/// `ceiling` before it ran out of room, or the data was simply bad — falls
+/// back to `open_decoded`'s streaming path, which always works, and never
+/// fails the search outright. With a small `--inflate-budget` and a large
+/// archive this fallback is the expected, common case, not an error: the
+/// message `inflate_buffered` produces says so.
 pub fn open_decoded_with(
     path: &Path,
     strategy: crate::inflate::Strategy,
 ) -> anyhow::Result<Box<dyn Read + Send>> {
-    if let crate::inflate::Strategy::Buffer { capacity } = strategy {
-        match crate::inflate::inflate_buffered(path, capacity) {
+    if let crate::inflate::Strategy::Buffer { capacity, ceiling } = strategy {
+        match crate::inflate::inflate_buffered(path, capacity, ceiling) {
             Ok(bytes) => return Ok(Box::new(io::Cursor::new(bytes))),
             Err(e) => {
                 // Never fail the search because the fast path did not fit:
