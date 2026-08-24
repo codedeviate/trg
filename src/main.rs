@@ -1,26 +1,26 @@
-use std::path::PathBuf;
-
 use termcolor::{BufferWriter, ColorChoice};
 use trg::{print, search};
 
 fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args_os().skip(1);
-    let pattern = args.next().expect("usage: trg PATTERN PATH...").into_string().unwrap();
-    let paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
-
-    let opts = search::SearchOpts::default();
-    let matcher = search::build_matcher(&[pattern], &opts)?;
-    let mut searcher = search::build_searcher(&opts);
+    let args = trg::cli::parse()?;
+    let matcher = search::build_matcher(&args.patterns, &args.search)?;
+    let mut searcher = search::build_searcher(&args.search);
 
     let bw = BufferWriter::stdout(ColorChoice::Never);
     let mut matched = false;
     let mut partial = false;
 
-    for p in &paths {
+    for p in &args.paths {
         let mut buf = bw.buffer();
-        let mut printer = print::build(&print::PrintOpts::default(), &mut buf);
+        let mut printer = print::build(&args.print, &mut buf);
         let outcome = search::search_archive(
-            p, &matcher, &mut searcher, &mut printer, ':', None, None,
+            p,
+            &matcher,
+            &mut searcher,
+            &mut printer,
+            args.archive_sep,
+            None,
+            args.search.max_count,
         );
         if printer.has_written() {
             matched = true;

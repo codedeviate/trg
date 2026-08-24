@@ -1,0 +1,370 @@
+//! Argument parsing. rg-compatible flag names wherever the job is the same;
+//! `-g` deliberately means *member* filter, an approved divergence.
+
+use std::ffi::OsString;
+use std::path::PathBuf;
+
+use crate::{print, search};
+
+pub const HELP: &str = "\
+trg — search inside .tgz log archives
+
+USAGE:
+    trg [OPTIONS] PATTERN [PATH...]
+    trg [OPTIONS] -e PATTERN... [PATH...]
+
+MATCHING (same meaning as ripgrep):
+    -e, --regexp PAT      add a pattern; repeatable
+    -i, --ignore-case     case-insensitive
+    -S, --smart-case      case-insensitive unless the pattern has uppercase
+    -w, --word-regexp     match whole words only
+    -F, --fixed-strings   treat patterns as literals
+    -v, --invert-match    show non-matching lines
+    -a, --text            search members that look binary
+    -m, --max-count NUM   stop after NUM matches per member
+        --crlf            treat CRLF as the line terminator
+
+OUTPUT (same meaning as ripgrep):
+    -n, --line-number     show line numbers (default)
+    -N, --no-line-number  hide line numbers
+    -A, --after NUM       lines of trailing context
+    -B, --before NUM      lines of leading context
+    -C, --context NUM     lines of context on both sides
+    -o, --only-matching   print only the matching part
+    -c, --count           print a count per member
+    -l, --files-with-matches
+                          print member paths only
+    -q, --quiet           print nothing; exit code only
+        --json            JSON Lines output
+        --color WHEN      auto | always | never
+
+ARCHIVES:
+    -g, --glob PAT        filter MEMBERS inside archives; repeatable
+    -T, --list-members    list member paths without searching
+        --archive-sep C   separator in archive:member:line (default ':')
+        --no-sort         allow output in completion order
+
+RESOURCES:
+    -j, --jobs NUM        archives searched concurrently (default 1)
+        --turbo           -j <ncpus> --nice 0
+        --nice NUM        scheduling priority (default 10)
+        --no-nice         do not lower priority
+        --no-drop-cache   keep archive pages in the page cache
+        --inflate MODE    auto | stream | buffer (default auto)
+        --inflate-budget SIZE
+                          whole-buffer inflate ceiling (default 64M)
+        --load-limit N    clamp jobs if 1-min load average exceeds N
+
+    -h, --help            this message
+    -V, --version         version
+
+EXIT CODES:
+    0  matches found, everything read
+    1  no matches, everything read
+    2  something went unread — never trust a 1 you did not get
+";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InflateMode { Auto, Stream, Buffer }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorArg { Auto, Always, Never }
+
+pub struct Args {
+    pub patterns: Vec<String>,
+    pub paths: Vec<PathBuf>,
+    pub globs: Vec<String>,
+    pub jobs: usize,
+    pub nice: Option<i32>,
+    pub drop_cache: bool,
+    pub inflate: InflateMode,
+    pub inflate_budget: u64,
+    pub load_limit: Option<f64>,
+    pub archive_sep: char,
+    pub sort: bool,
+    pub list_members: bool,
+    pub count: bool,
+    pub files_with_matches: bool,
+    pub quiet: bool,
+    pub json: bool,
+    pub color: ColorArg,
+    pub search: search::SearchOpts,
+    pub print: print::PrintOpts,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            patterns: Vec::new(),
+            paths: Vec::new(),
+            globs: Vec::new(),
+            jobs: 1,
+            nice: Some(10),
+            drop_cache: true,
+            inflate: InflateMode::Auto,
+            inflate_budget: 64 * 1024 * 1024,
+            load_limit: None,
+            archive_sep: ':',
+            sort: true,
+            list_members: false,
+            count: false,
+            files_with_matches: false,
+            quiet: false,
+            json: false,
+            color: ColorArg::Auto,
+            search: search::SearchOpts::default(),
+            print: print::PrintOpts::default(),
+        }
+    }
+}
+
+/// `512K`, `2M`, `1G`, or a bare byte count.
+fn parse_size(s: &str) -> anyhow::Result<u64> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last() {
+        Some('K') | Some('k') => (&s[..s.len() - 1], 1024),
+        Some('M') | Some('m') => (&s[..s.len() - 1], 1024 * 1024),
+        Some('G') | Some('g') => (&s[..s.len() - 1], 1024 * 1024 * 1024),
+        _ => (s, 1),
+    };
+    Ok(num.parse::<u64>()? * mult)
+}
+
+pub fn parse() -> anyhow::Result<Args> {
+    parse_from(std::env::args_os())
+}
+
+pub fn parse_from<I>(argv: I) -> anyhow::Result<Args>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    use lexopt::prelude::*;
+
+    let mut a = Args::default();
+    let mut explicit_jobs = false;
+    let mut explicit_nice = false;
+    let mut ctx_both: Option<usize> = None;
+
+    let mut p = lexopt::Parser::from_iter(argv);
+    while let Some(arg) = p.next()? {
+        match arg {
+            Short('e') | Long("regexp") => a.patterns.push(p.value()?.string()?),
+            Short('i') | Long("ignore-case") => a.search.case_insensitive = true,
+            Short('S') | Long("smart-case") => a.search.smart_case = true,
+            Short('w') | Long("word-regexp") => a.search.word = true,
+            Short('F') | Long("fixed-strings") => a.search.fixed = true,
+            Short('v') | Long("invert-match") => a.search.invert = true,
+            Short('a') | Long("text") => a.search.text = true,
+            Short('m') | Long("max-count") => {
+                a.search.max_count = Some(p.value()?.parse()?)
+            }
+            Long("crlf") => a.search.crlf = true,
+
+            Short('n') | Long("line-number") => a.search.line_numbers = true,
+            Short('N') | Long("no-line-number") => a.search.line_numbers = false,
+            Short('A') | Long("after") | Long("after-context") => {
+                a.search.after = p.value()?.parse()?
+            }
+            Short('B') | Long("before") | Long("before-context") => {
+                a.search.before = p.value()?.parse()?
+            }
+            Short('C') | Long("context") => ctx_both = Some(p.value()?.parse()?),
+            Short('o') | Long("only-matching") => a.print.only_matching = true,
+            Short('c') | Long("count") => a.count = true,
+            Short('l') | Long("files-with-matches") => a.files_with_matches = true,
+            Short('q') | Long("quiet") => a.quiet = true,
+            Long("json") => a.json = true,
+            Long("color") => {
+                a.color = match p.value()?.string()?.as_str() {
+                    "auto" => ColorArg::Auto,
+                    "always" => ColorArg::Always,
+                    "never" => ColorArg::Never,
+                    other => anyhow::bail!("--color expects auto|always|never, got '{other}'"),
+                }
+            }
+
+            Short('g') | Long("glob") => a.globs.push(p.value()?.string()?),
+            Short('T') | Long("list-members") => a.list_members = true,
+            Long("archive-sep") => {
+                let v = p.value()?.string()?;
+                let mut it = v.chars();
+                match (it.next(), it.next()) {
+                    (Some(c), None) => a.archive_sep = c,
+                    _ => anyhow::bail!("--archive-sep expects exactly one character"),
+                }
+            }
+            Long("no-sort") => a.sort = false,
+
+            Short('j') | Long("jobs") => {
+                a.jobs = p.value()?.parse()?;
+                explicit_jobs = true;
+            }
+            Long("turbo") => {
+                if !explicit_jobs { a.jobs = num_cpus::get(); }
+                if !explicit_nice { a.nice = Some(0); }
+            }
+            Long("nice") => {
+                a.nice = Some(p.value()?.parse()?);
+                explicit_nice = true;
+            }
+            Long("no-nice") => {
+                a.nice = None;
+                explicit_nice = true;
+            }
+            Long("no-drop-cache") => a.drop_cache = false,
+            Long("inflate") => {
+                a.inflate = match p.value()?.string()?.as_str() {
+                    "auto" => InflateMode::Auto,
+                    "stream" => InflateMode::Stream,
+                    "buffer" => InflateMode::Buffer,
+                    other => anyhow::bail!("--inflate expects auto|stream|buffer, got '{other}'"),
+                }
+            }
+            Long("inflate-budget") => a.inflate_budget = parse_size(&p.value()?.string()?)?,
+            Long("load-limit") => a.load_limit = Some(p.value()?.parse()?),
+
+            Short('h') | Long("help") => {
+                print!("{HELP}");
+                std::process::exit(0);
+            }
+            Short('V') | Long("version") => {
+                println!("trg {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+
+            Value(v) => {
+                if a.patterns.is_empty() {
+                    a.patterns.push(v.string()?);
+                } else {
+                    a.paths.push(PathBuf::from(v));
+                }
+            }
+            other => return Err(other.unexpected().into()),
+        }
+    }
+
+    // -j given explicitly after --turbo must win; --turbo already respected
+    // explicit_jobs, so nothing more is needed here.
+    if let Some(n) = ctx_both {
+        a.search.before = n;
+        a.search.after = n;
+    }
+    a.print.line_numbers = a.search.line_numbers;
+
+    if a.patterns.is_empty() {
+        anyhow::bail!("no pattern given\n\n{HELP}");
+    }
+    Ok(a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(args: &[&str]) -> Args {
+        let argv: Vec<std::ffi::OsString> =
+            std::iter::once("trg".into()).chain(args.iter().map(|s| s.into())).collect();
+        parse_from(argv).unwrap()
+    }
+
+    #[test]
+    fn defaults_match_the_spec() {
+        let a = p(&["pat", "f.tgz"]);
+        assert_eq!(a.jobs, 1);
+        assert_eq!(a.nice, Some(10));
+        assert!(a.drop_cache);
+        assert!(matches!(a.inflate, InflateMode::Auto));
+        assert_eq!(a.inflate_budget, 64 * 1024 * 1024);
+        assert_eq!(a.archive_sep, ':');
+        assert!(a.sort);
+        assert_eq!(a.search.heap_limit, 16 * 1024 * 1024);
+        assert!(a.load_limit.is_none());
+    }
+
+    #[test]
+    fn first_positional_is_the_pattern_rest_are_paths() {
+        let a = p(&["NEEDLE", "a.tgz", "b.tgz"]);
+        assert_eq!(a.patterns, vec!["NEEDLE"]);
+        assert_eq!(a.paths.len(), 2);
+    }
+
+    #[test]
+    fn dash_e_patterns_do_not_consume_the_first_positional() {
+        let a = p(&["-e", "one", "-e", "two", "a.tgz"]);
+        assert_eq!(a.patterns, vec!["one", "two"]);
+        assert_eq!(a.paths.len(), 1);
+    }
+
+    #[test]
+    fn turbo_raises_jobs_and_clears_nice() {
+        let a = p(&["--turbo", "pat", "f.tgz"]);
+        assert_eq!(a.jobs, num_cpus::get());
+        assert_eq!(a.nice, Some(0));
+        assert!(a.drop_cache, "cache dropping stays on under --turbo");
+    }
+
+    #[test]
+    fn explicit_j_after_turbo_wins() {
+        let a = p(&["--turbo", "-j", "2", "pat", "f.tgz"]);
+        assert_eq!(a.jobs, 2);
+    }
+
+    #[test]
+    fn no_nice_disables_priority_lowering() {
+        let a = p(&["--no-nice", "pat", "f.tgz"]);
+        assert_eq!(a.nice, None);
+    }
+
+    #[test]
+    fn context_flags_match_rg_semantics() {
+        let a = p(&["-C", "3", "pat", "f.tgz"]);
+        assert_eq!((a.search.before, a.search.after), (3, 3));
+        let a = p(&["-A", "2", "-B", "1", "pat", "f.tgz"]);
+        assert_eq!((a.search.before, a.search.after), (1, 2));
+    }
+
+    #[test]
+    fn n_capital_disables_line_numbers() {
+        assert!(p(&["pat", "f.tgz"]).search.line_numbers);
+        assert!(!p(&["-N", "pat", "f.tgz"]).search.line_numbers);
+    }
+
+    #[test]
+    fn size_suffixes_parse() {
+        assert_eq!(p(&["--inflate-budget", "512K", "p", "f"]).inflate_budget, 512 * 1024);
+        assert_eq!(p(&["--inflate-budget", "2M", "p", "f"]).inflate_budget, 2 * 1024 * 1024);
+        assert_eq!(p(&["--inflate-budget", "1G", "p", "f"]).inflate_budget, 1024 * 1024 * 1024);
+        assert_eq!(p(&["--inflate-budget", "1024", "p", "f"]).inflate_budget, 1024);
+    }
+
+    #[test]
+    fn globs_accumulate() {
+        let a = p(&["-g", "*.access.log", "-g", "*.error.log", "pat", "f.tgz"]);
+        assert_eq!(a.globs.len(), 2);
+    }
+
+    #[test]
+    fn archive_sep_is_configurable() {
+        assert_eq!(p(&["--archive-sep", "!", "pat", "f.tgz"]).archive_sep, '!');
+    }
+
+    #[test]
+    fn unknown_flag_is_an_error_not_a_pattern() {
+        let argv: Vec<std::ffi::OsString> =
+            ["trg", "--nonsense", "pat", "f.tgz"].iter().map(|s| s.into()).collect();
+        assert!(parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn inflate_mode_rejects_garbage() {
+        let argv: Vec<std::ffi::OsString> =
+            ["trg", "--inflate", "sideways", "p", "f"].iter().map(|s| s.into()).collect();
+        assert!(parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn crlf_flag_sets_the_search_opt_and_defaults_to_false() {
+        assert!(!p(&["pat", "f.tgz"]).search.crlf);
+        assert!(p(&["--crlf", "pat", "f.tgz"]).search.crlf);
+    }
+}

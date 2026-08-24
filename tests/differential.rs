@@ -106,6 +106,45 @@ fn agrees_with_rg_on_anchored_patterns() {
 }
 
 #[test]
+fn crlf_flag_matches_rg_crlf() {
+    // Opt-in `--crlf` (Task 6) must reproduce `rg --crlf`'s behaviour: with
+    // CRLF treated as the line terminator, a `$`-anchored pattern matches up
+    // to (not including) the trailing \r, so "NEEDLE$" matches a line whose
+    // raw bytes are "NEEDLE\r\n". This is the mirror image of the *default*
+    // (no --crlf) case covered by `agrees_with_rg_on_anchored_patterns`,
+    // which must keep failing to match that same pattern.
+    let f = helpers::tgz("crlf.tgz", &[("logs/a.log", b"one\r\nNEEDLE\r\nthree\r\n")]);
+
+    let ex = tempfile::tempdir().unwrap();
+    let status = Command::new("tar")
+        .args(["xzf", f.path.to_str().unwrap(), "-C", ex.path().to_str().unwrap()])
+        .status().unwrap();
+    assert!(status.success());
+
+    let rg_out = Command::new("rg")
+        .args(["--crlf", "--no-heading", "-n", "--color", "never", "--sort", "path", "NEEDLE$", "."])
+        .current_dir(ex.path())
+        .output()
+        .expect("rg must be installed to run the differential oracle");
+    let want: Vec<String> = String::from_utf8_lossy(&rg_out.stdout)
+        .lines()
+        .map(|l| l.trim_start_matches("./").to_string())
+        .collect();
+    assert!(!want.is_empty(), "sanity: rg --crlf should match NEEDLE$ on a CRLF member");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(["--crlf", "NEEDLE$", f.path.to_str().unwrap()])
+        .output().unwrap();
+    let prefix = format!("{}:", f.path.display());
+    let got: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.strip_prefix(&prefix).unwrap_or(l).to_string())
+        .collect();
+
+    assert_eq!(got, want, "trg --crlf disagreed with rg --crlf");
+}
+
+#[test]
 fn output_path_is_archive_then_member() {
     let f = helpers::tgz("p.tgz", &[("logs/vhost03.access.log", b"NEEDLE\n")]);
     let out = Command::new(env!("CARGO_BIN_EXE_trg"))

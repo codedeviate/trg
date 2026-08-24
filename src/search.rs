@@ -19,6 +19,10 @@ pub struct SearchOpts {
     pub text: bool,
     pub max_count: Option<u64>,
     pub heap_limit: usize,
+    /// `--crlf`: treat CRLF as the line terminator. Off by default — see
+    /// `agrees_with_rg_on_anchored_patterns` in `tests/differential.rs` for
+    /// why this must never be hard-coded on.
+    pub crlf: bool,
 }
 
 impl Default for SearchOpts {
@@ -35,6 +39,7 @@ impl Default for SearchOpts {
             text: false,
             max_count: None,
             heap_limit: 16 * 1024 * 1024,
+            crlf: false,
         }
     }
 }
@@ -48,7 +53,8 @@ pub fn build_matcher(
         .case_smart(o.smart_case)
         .word(o.word)
         .fixed_strings(o.fixed)
-        .multi_line(false);
+        .multi_line(false)
+        .crlf(o.crlf);
     Ok(b.build_many(pats)?)
 }
 
@@ -64,6 +70,9 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
         } else {
             BinaryDetection::quit(b'\x00')
         });
+    if o.crlf {
+        b.line_terminator(grep_matcher::LineTerminator::crlf());
+    }
     b.build()
 }
 
