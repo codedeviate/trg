@@ -33,7 +33,18 @@ libc = "0.2.189"
 tempfile = "3.27.0"
 
 [features]
-default = []
+# zlib-ng by default: measured on Linux/aarch64 over the 11.5 GB benchmark
+# corpus, `trg -j1` costs 3.85 s user CPU on zlib-ng against 6.60 s on flate2's
+# default miniz_oxide backend — 1.71x, with byte-identical output and the whole
+# suite green on both. Task 1's gate said 0.96x, but it ran on macOS, which is
+# neither the production platform nor the one every spec figure was measured on.
+#
+# The cost is a build-time dependency on cmake and a C toolchain (libz-ng-sys
+# builds zlib-ng from source). Where that is not available:
+#     cargo build --release --no-default-features
+# which falls back to miniz_oxide — pure Rust, still 2.9x cheaper than the
+# `gzip` binary that zgrep and `rg -z` both shell out to.
+default = ["zlib-ng"]
 zlib-ng = ["flate2/zlib-ng"]
 
 [profile.release]
