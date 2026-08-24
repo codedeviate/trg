@@ -4,7 +4,6 @@
 use std::io;
 use std::path::Path;
 
-use grep_matcher::LineTerminator;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 
 pub struct SearchOpts {
@@ -49,7 +48,6 @@ pub fn build_matcher(
         .case_smart(o.smart_case)
         .word(o.word)
         .fixed_strings(o.fixed)
-        .crlf(true)
         .multi_line(false);
     Ok(b.build_many(pats)?)
 }
@@ -61,10 +59,6 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
         .after_context(o.after)
         .invert_match(o.invert)
         .heap_limit(Some(o.heap_limit))
-        // Must mirror build_matcher's unconditional `crlf(true)`: the matcher
-        // and searcher line terminators are required to match, or
-        // `search_reader` returns a config error.
-        .line_terminator(LineTerminator::crlf())
         .binary_detection(if o.text {
             BinaryDetection::none()
         } else {

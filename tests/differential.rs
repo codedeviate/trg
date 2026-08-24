@@ -87,6 +87,25 @@ fn does_not_need_dash_a_for_text_members() {
 }
 
 #[test]
+fn agrees_with_rg_on_anchored_patterns() {
+    // Guards against `build_matcher` ever hard-coding `.crlf(true)` again.
+    // That setting makes trg behave like `rg --crlf` unconditionally, which
+    // silently flips the common case: an ordinary LF Apache log searched
+    // with a `$`-anchored pattern would stop matching lines that plain `rg`
+    // (no --crlf) does match.
+
+    // LF endings: rg matches "NEEDLE$" without --crlf. If trg were stuck in
+    // CRLF mode, it would report no match here — a false negative on the
+    // common case.
+    body(&[("logs/a.log", b"one\nNEEDLE\nthree\n")], "NEEDLE$");
+
+    // CRLF endings: plain `rg` (no --crlf) does NOT match "NEEDLE$" here,
+    // because the trailing \r stays part of the line content. trg must
+    // agree with that, not with `rg --crlf`.
+    body(&[("logs/a.log", b"one\r\nNEEDLE\r\nthree\r\n")], "NEEDLE$");
+}
+
+#[test]
 fn output_path_is_archive_then_member() {
     let f = helpers::tgz("p.tgz", &[("logs/vhost03.access.log", b"NEEDLE\n")]);
     let out = Command::new(env!("CARGO_BIN_EXE_trg"))
