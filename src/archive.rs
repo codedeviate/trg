@@ -111,9 +111,15 @@ pub fn open_decoded_dropping(
 
 /// The streaming open. `prepare` runs after the sniff rather than immediately
 /// after `File::open`, because until the head has been read we do not know
-/// whether this is an archive we are allowed to touch. The cost of that
-/// ordering is one page of a plain file left cached on macOS, against the
-/// alternative of setting `F_NOCACHE` on a live Apache log.
+/// whether this is an archive we are allowed to touch.
+///
+/// The cost of that ordering is paid on macOS, and it is larger than the
+/// 512-byte sniff suggests: the file is wrapped in a 64 KiB `BufReader` before
+/// `peek`, so the first read pulls **64 KiB — 16 pages — into the cache before
+/// `F_NOCACHE` is set**. It is paid on *archives*, which are the only inputs
+/// `F_NOCACHE` is ever applied to; plain files are excluded by design and stay
+/// fully cached regardless. Sixteen pages per archive against the alternative
+/// of setting `F_NOCACHE` on a live Apache log is the trade being made.
 fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + Send>> {
     let f = File::open(path)?;
     let dup = f.try_clone()?;

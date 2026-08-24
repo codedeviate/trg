@@ -127,21 +127,33 @@ pub fn display_path(archive: &Path, member: &str, sep: char) -> String {
     }
 }
 
+/// Everything a search needs that is the same for every archive in a run.
+///
+/// Borrowed and shared across the whole scheduler: it is `Sync`, so one
+/// instance is read by every worker. The per-job values — the path, the
+/// `Searcher`, the printer, and the inflate strategy — stay as arguments,
+/// because each worker must own its own (`Searcher` is not `Sync`) and the
+/// strategy is chosen per file from its size.
+pub struct SearchCtx<'a> {
+    pub matcher: &'a grep_regex::RegexMatcher,
+    pub sep: char,
+    pub globs: Option<&'a globset::GlobSet>,
+    pub max_count: Option<u64>,
+    /// A request, not a decision: `open_decoded_dropping` narrows it to
+    /// archives, so a plain live logfile is never evicted.
+    pub drop_cache: bool,
+}
+
 /// Search one archive into `printer`'s buffer.
 pub fn search_archive(
+    ctx: &SearchCtx<'_>,
     path: &Path,
-    m: &grep_regex::RegexMatcher,
     s: &mut Searcher,
     printer: &mut grep_printer::Standard<&mut termcolor::Buffer>,
-    sep: char,
-    globs: Option<&globset::GlobSet>,
-    max_count: Option<u64>,
     strategy: crate::inflate::Strategy,
-    drop_cache: bool,
 ) -> crate::archive::Outcome {
-    // `drop_cache` is a request, not a decision: `open_decoded_dropping`
-    // narrows it to archives, so a plain live logfile is never evicted.
-    let rdr = match crate::archive::open_decoded_dropping(path, strategy, drop_cache) {
+    let (m, sep, globs, max_count) = (ctx.matcher, ctx.sep, ctx.globs, ctx.max_count);
+    let rdr = match crate::archive::open_decoded_dropping(path, strategy, ctx.drop_cache) {
         Ok(r) => r,
         Err(e) => {
             let mut o = crate::archive::Outcome::default();

@@ -137,8 +137,12 @@ pub fn load_average_1m() -> Option<f64> {
 /// said they would tolerate. No source of load (anything but Linux) means no
 /// clamping, never a guess.
 pub fn clamp_jobs(jobs: usize, limit: Option<f64>) -> usize {
-    match (limit, load_average_1m()) {
-        (Some(max), Some(now)) if now > max => 1,
+    // Match on `limit` first. Matching on the tuple would evaluate
+    // `load_average_1m()` eagerly, reading `/proc/loadavg` on every startup
+    // even when `--load-limit` was never given.
+    let Some(max) = limit else { return jobs };
+    match load_average_1m() {
+        Some(now) if now > max => 1,
         _ => jobs,
     }
 }
