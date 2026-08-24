@@ -127,7 +127,9 @@ fn parse_size(s: &str) -> anyhow::Result<u64> {
         Some('G') | Some('g') => (&s[..s.len() - 1], 1024 * 1024 * 1024),
         _ => (s, 1),
     };
-    Ok(num.parse::<u64>()? * mult)
+    let n: u64 = num.parse()?;
+    n.checked_mul(mult)
+        .ok_or_else(|| anyhow::anyhow!("--inflate-budget value too large: {s}"))
 }
 
 pub fn parse() -> anyhow::Result<Args> {
@@ -366,5 +368,27 @@ mod tests {
     fn crlf_flag_sets_the_search_opt_and_defaults_to_false() {
         assert!(!p(&["pat", "f.tgz"]).search.crlf);
         assert!(p(&["--crlf", "pat", "f.tgz"]).search.crlf);
+    }
+
+    #[test]
+    fn inflate_budget_overflow_is_an_error_not_a_wrapped_value() {
+        let argv: Vec<std::ffi::OsString> =
+            ["trg", "--inflate-budget", "18446744073709551615G", "p", "f"]
+                .iter().map(|s| s.into()).collect();
+        assert!(parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn inflate_budget_accepts_u64_max_with_no_suffix() {
+        let a = p(&["--inflate-budget", &u64::MAX.to_string(), "p", "f"]);
+        assert_eq!(a.inflate_budget, u64::MAX);
+    }
+
+    #[test]
+    fn inflate_budget_accepts_a_large_value_with_a_suffix_just_under_the_boundary() {
+        // u64::MAX / 1024^3, so the multiply by G does not overflow.
+        let n = u64::MAX / (1024 * 1024 * 1024);
+        let a = p(&["--inflate-budget", &format!("{n}G"), "p", "f"]);
+        assert_eq!(a.inflate_budget, n * 1024 * 1024 * 1024);
     }
 }
