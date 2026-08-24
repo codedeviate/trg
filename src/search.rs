@@ -92,9 +92,12 @@ impl<S: Sink> MaxCount<S> {
         Self { inner, limit, seen: 0 }
     }
 
-    /// The wrapped sink, so the caller can ask it what it saw.
-    pub fn inner(&self) -> &S {
-        &self.inner
+    /// Whether the searcher reported any match at all for this member.
+    ///
+    /// This, and not the printer's own summary, is the exit code's source of
+    /// truth. See the note on `matched` below for why the difference matters.
+    pub fn saw_match(&self) -> bool {
+        self.seen > 0
     }
 }
 
@@ -102,10 +105,27 @@ impl<S: Sink> Sink for MaxCount<S> {
     type Error = S::Error;
 
     fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, S::Error> {
+        // Counted *before* the inner sink is consulted, and this ordering is
+        // load-bearing twice over.
+        //
+        // A printer is allowed to say "stop, I have seen enough" — `-l` and
+        // `-q` both quit on their first match — and a printer is allowed to
+        // revise what it reports afterwards: `SummarySink::finish` zeroes its
+        // own `match_count` whenever binary data was seen under
+        // `BinaryDetection::quit`, which grep-printer's source calls "an
+        // unfortunate inconsistency ... we accept the bug". That is a
+        // reasonable answer to rg's question ("is this file worth showing
+        // you?") and the wrong answer to ours, because exit 1 here is a
+        // positive claim that the logs are clean.
+        //
+        // Counting first makes `seen` the record of what the *searcher*
+        // reported, which no printer can overrule and no early stop can
+        // truncate. The `-m` limit is unaffected: when the inner sink stops the
+        // search, its own count no longer decides anything.
+        self.seen += 1;
         if !self.inner.matched(s, m)? {
             return Ok(false);
         }
-        self.seen += 1;
         Ok(match self.limit {
             Some(n) => self.seen < n,
             None => true,
@@ -179,12 +199,13 @@ fn excluded_plain_file(member: &str, path: &Path, globs: Option<&globset::GlobSe
 
 /// Search one member, returning whether it matched.
 ///
-/// "Did this member match" comes from the sink's own `has_match()`, never from
-/// whether bytes reached the buffer. Those two are only equal in the default
-/// mode: `-q` matches and writes nothing, and `-c` can write a line for a
-/// member whose interesting property is the count, not the bytes. Deriving the
-/// exit code from output volume is how a run reports "no matches" for logs it
-/// did match in.
+/// "Did this member match" comes from [`MaxCount::saw_match`] — the searcher's
+/// own tally — and from neither of the two tempting alternatives. Not from
+/// whether bytes reached the buffer: `-q` matches and writes nothing, and `-c`
+/// writes a line whose content is a count. And not from the sink's
+/// `has_match()` either, because `SummarySink` retracts that after seeing
+/// binary data, which would make `-c` exit 1 on an archive `-l`, `-q`,
+/// `--json` and the default mode all agree matched.
 fn search_member(
     printer: &mut crate::print::Printer<'_>,
     m: &grep_regex::RegexMatcher,
@@ -204,7 +225,7 @@ fn search_member(
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.
-            let hit = capped.inner().has_match();
+            let hit = capped.saw_match();
             res.map_err(io::Error::other)?;
             hit
         }};
@@ -253,13 +274,25 @@ pub fn search_archive(
 /// Deliberately does **not** short-circuit on the first member: the exit-code
 /// contract applies here too, so the whole archive is walked and any failure
 /// on the way lands in `Outcome.errors`.
+///
+/// Lists every regular member, including ones a *search* would skip as binary.
+/// Listing is a question about the tar header; skipping a binary member is a
+/// question about its content, which `-T` never reads.
+///
+/// Takes the same `ctx` and `strategy` as [`search_archive`], and opens through
+/// the same [`crate::archive::open_decoded_dropping`], because `-T` walks
+/// exactly as many bytes of exactly the same archives. Opening through the
+/// plain `open_decoded` instead would make `-T` the one mode that ignores
+/// `--inflate` and leaves a sweep's worth of archive pages in the cache —
+/// precisely the pollution the cache-dropping work exists to prevent.
 pub fn list_members(
+    ctx: &SearchCtx<'_>,
     path: &Path,
-    globs: Option<&globset::GlobSet>,
-    sep: char,
+    strategy: crate::inflate::Strategy,
     out: &mut dyn io::Write,
 ) -> crate::archive::Outcome {
-    let rdr = match crate::archive::open_decoded(path) {
+    let (sep, globs) = (ctx.sep, ctx.globs);
+    let rdr = match crate::archive::open_decoded_dropping(path, strategy, ctx.drop_cache) {
         Ok(r) => r,
         Err(e) => {
             let mut o = crate::archive::Outcome::default();

@@ -112,6 +112,34 @@ fn a_match_does_not_hide_unread_data_in_the_silent_modes() {
     }
 }
 
+/// `SummarySink::finish` squashes its `match_count` to zero whenever binary
+/// data was seen under `BinaryDetection::quit`. grep-printer's own source calls
+/// that "an unfortunate inconsistency ... we accept the bug" — defensible for
+/// rg's filter semantics, where the answer is "this file is not worth showing
+/// you", and indefensible here, where a 1 is a positive claim that the logs are
+/// clean. The verdict has to come from something the printer cannot overrule.
+#[test]
+fn every_mode_agrees_about_a_match_that_ends_in_binary_data() {
+    let body = helpers::match_then_binary();
+    let f = helpers::tgz("bin.tgz", &[("logs/a.log", &body)]);
+    let p = f.path.to_str().unwrap();
+
+    let (out, _, base) = run(&["NEEDLE", p]);
+    assert!(out.contains("NEEDLE first"), "the default mode must find it: {out}");
+    assert_eq!(base, Some(0), "the archive matched, so the default mode is 0: {out}");
+
+    for mode in [&["-c"][..], &["-l"][..], &["-q"][..], &["--json"][..], &["-a", "-c"][..]] {
+        let mut args: Vec<&str> = mode.to_vec();
+        args.extend_from_slice(&["NEEDLE", p]);
+        let (o, e, code) = run(&args);
+        assert_eq!(
+            code, base,
+            "{mode:?} disagreed with the default mode about the same archive; \
+             stdout={o:?} stderr={e:?}"
+        );
+    }
+}
+
 /// `members_searched == 0` is NOT a partial-run signal: an archive whose
 /// members are all filtered out by `-g` was read completely and found nothing.
 #[test]
@@ -166,6 +194,67 @@ fn an_invalid_glob_exits_two() {
     let (_, err, code) = run(&["-g", "[", "NEEDLE", f.path.to_str().unwrap()]);
     assert_eq!(code, Some(2));
     assert!(!err.is_empty());
+}
+
+/// The other half of the contract: output lost is output unseen, which is the
+/// same class of harm as input unread. Both are 2.
+///
+/// Linux only, and not for want of trying elsewhere: macOS has no `/dev/full`,
+/// and a genuinely closed fd 1 is unreachable because Rust's runtime reopens
+/// `/dev/null` over any of fds 0/1/2 it finds closed at startup — so both
+/// `>&-` and a `preexec_fn` that closes fd 1 exit 0 with nothing written.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_disk_is_two_not_zero() {
+    let f = helpers::tgz("df.tgz", &[("logs/a.log", b"NEEDLE\n")]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(["NEEDLE", f.path.to_str().unwrap()])
+        .stdout(std::fs::File::create("/dev/full").unwrap())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "a lost write must not read as success: {err}");
+    assert!(err.contains("write error"), "a silent 2 is barely better than a wrong 1: {err}");
+}
+
+/// The control for the test above: `/dev/full` must not turn *everything* into
+/// a 2. With no match there is nothing to write, so nothing can fail to write.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_disk_with_nothing_to_write_is_still_one() {
+    let f = helpers::tgz("df0.tgz", &[("logs/a.log", b"nothing\n")]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(["NEEDLE", f.path.to_str().unwrap()])
+        .stdout(std::fs::File::create("/dev/full").unwrap())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "stderr={err}");
+    assert!(err.is_empty(), "stderr={err}");
+}
+
+/// The other control, and the reason the write-error arm cannot simply treat
+/// every failed write as a fault: `trg PATTERN *.tgz | head -5` is ordinary
+/// usage. EPIPE stops the sweep quietly and reports on what was written.
+/// `pipefail` makes the pipeline's status trg's own rather than `head`'s.
+#[test]
+fn a_closed_pipe_is_zero_and_silent() {
+    let f = helpers::tgz(
+        "pipe.tgz",
+        &[("logs/a.log", b"NEEDLE one\nNEEDLE two\nNEEDLE three\n")],
+    );
+    let script = format!(
+        "set -o pipefail; {} NEEDLE {} | head -1",
+        env!("CARGO_BIN_EXE_trg"),
+        f.path.to_str().unwrap()
+    );
+    let out = std::process::Command::new("bash").arg("-c").arg(&script).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("NEEDLE one"));
+    assert_eq!(out.status.code(), Some(0), "a closed pipe is not a fault: {err}");
+    assert!(err.is_empty(), "a closed pipe is not worth a diagnostic: {err}");
 }
 
 #[test]

@@ -174,3 +174,16 @@ pub fn run_trg(args: &[&str]) -> (String, String, Option<i32>) {
         out.status.code(),
     )
 }
+
+/// A member that matches early and then turns binary, which is what trips
+/// `SummarySink::finish` into zeroing its own match count. The filler matters:
+/// the match must be reported well before the NUL bytes are reached, so the
+/// searcher genuinely matched and *then* quit.
+pub fn match_then_binary() -> Vec<u8> {
+    let mut body = b"NEEDLE first\n".to_vec();
+    body.extend(std::iter::repeat_n(b'x', 320 * 1024));
+    body.push(b'\n');
+    body.extend_from_slice(&[0u8; 64]);
+    body.push(b'\n');
+    body
+}

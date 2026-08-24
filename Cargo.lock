@@ -212,20 +212,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grep-cli"
-version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf32d263c5d5cc2a23ce587097f5ddafdb188492ba2e6fb638eaccdc22453631"
-dependencies = [
- "bstr",
- "globset",
- "libc",
- "log",
- "termcolor",
- "winapi-util",
-]
-
-[[package]]
 name = "grep-matcher"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -600,7 +586,6 @@ dependencies = [
  "assert_cmd",
  "flate2",
  "globset",
- "grep-cli",
  "grep-matcher",
  "grep-printer",
  "grep-regex",

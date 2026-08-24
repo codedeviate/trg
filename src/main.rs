@@ -105,14 +105,16 @@ fn run() -> anyhow::Result<RunStatus> {
         // archive count.
         || search::build_searcher(&args.search),
         |job, searcher, buf| {
+            let strategy = trg::inflate::choose(args.inflate, &job.path, args.inflate_budget);
             // `-T` is a different question, not a different printer: it never
-            // decompresses a member, so it takes its own path rather than
-            // threading a "do not search" flag through the search.
+            // reads a member's *content*, so it takes its own path rather than
+            // threading a "do not search" flag through the search. It still
+            // opens the archive the same way, under the same inflate strategy
+            // and the same cache policy.
             if args.list_members {
-                return search::list_members(&job.path, globs.as_ref(), args.archive_sep, buf);
+                return search::list_members(&ctx, &job.path, strategy, buf);
             }
             let mut printer = print::build(&args.print, buf);
-            let strategy = trg::inflate::choose(args.inflate, &job.path, args.inflate_budget);
             search::search_archive(&ctx, &job.path, searcher, &mut printer, strategy)
         },
         |done| {

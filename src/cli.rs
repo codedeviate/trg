@@ -42,7 +42,8 @@ OUTPUT (same meaning as ripgrep):
 
 ARCHIVES:
     -g, --glob PAT        filter MEMBERS inside archives; repeatable
-    -T, --list-members    list member paths without searching
+    -T, --list-members    list member paths without searching; lists every
+                          member, including ones a search skips as binary
         --archive-sep C   separator in archive:member:line (default ':')
         --no-sort         allow output in completion order
 
