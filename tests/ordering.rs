@@ -472,7 +472,11 @@ fn the_pool_path_reuses_buffers_when_the_collector_keeps_up() {
     .unwrap();
 
     let n = made.load(AtomicOrdering::SeqCst);
-    assert!(n <= 12, "40 archives allocated {n} buffers; the pool is not being reused");
+    // Observed 7-9 unloaded and up to 16 when the rest of this suite is
+    // hammering the same cores; without pooling it is a deterministic 40. The
+    // bound is set for that margin rather than tight to the typical value —
+    // a tighter one flaked 2 runs in 25.
+    assert!(n <= 24, "40 archives allocated {n} buffers; the pool is not being reused");
 }
 
 #[test]
@@ -630,13 +634,21 @@ fn backpressure_does_not_deadlock_when_the_cap_is_below_one_job() {
                 b.write_all(&vec![b'y'; 64 * 1024]).unwrap();
                 trg::archive::Outcome::default()
             },
-            |_done: &Done| Ok(()),
+            |done: &Done| {
+                seen.lock().unwrap().push(done.index);
+                Ok(())
+            },
         )
         .unwrap();
-        seen.lock().unwrap().len();
         seen.into_inner().unwrap()
     });
-    let _ = seen;
+    // Not an ordering assertion: a cap below a single job's output means the
+    // spill valve fires by design, and abandoning the order is what it is for.
+    // What must hold is that the run completes and loses nothing.
+    let mut got = seen;
+    assert_eq!(got.len(), 24, "every job must be emitted exactly once");
+    got.sort_unstable();
+    assert_eq!(got, (0..24).collect::<Vec<_>>());
 }
 
 #[test]
@@ -668,4 +680,40 @@ fn backpressure_keeps_the_order_it_is_supposed_to_keep() {
         seen.into_inner().unwrap()
     });
     assert_eq!(got, (0..64).collect::<Vec<_>>(), "backpressure must not reorder output");
+}
+
+#[test]
+fn a_panicking_emit_does_not_wedge_the_pool() {
+    // The mirror of the worker-side hang the `Completion` guard fixed: a
+    // collector that unwinds out of `emit` skips the teardown that wakes
+    // workers parked on backpressure, and `thread::scope` then blocks forever
+    // joining them. The buffers still sitting in the collector's batch are also
+    // dropped without passing through `recycle`.
+    //
+    // `spill_bytes` is tiny against the per-job output so that workers are
+    // reliably parked at the moment `emit` dies. The "deliberate test panic in
+    // emit" line in this test's stderr is expected.
+    let unwound = within(30, || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            trg::sched::run(
+                jobs(200),
+                trg::sched::Config { workers: 8, sorted: true, spill_bytes: 1024 },
+                buf,
+                || (),
+                |_job, _c: &mut (), b| {
+                    use std::io::Write;
+                    b.write_all(&vec![b'y'; 64 * 1024]).unwrap();
+                    trg::archive::Outcome::default()
+                },
+                |done: &Done| {
+                    assert!(done.index != 3, "deliberate test panic in emit");
+                    std::thread::sleep(Duration::from_millis(2));
+                    Ok(())
+                },
+            )
+        }))
+        .is_err()
+    });
+
+    assert!(unwound, "emit's panic should have propagated out of run, not been swallowed");
 }

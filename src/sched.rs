@@ -157,6 +157,44 @@ impl Drop for Completion<'_> {
     }
 }
 
+/// Releases every worker parked on backpressure when the collector leaves,
+/// *including* when it leaves by unwinding out of `emit`.
+///
+/// The exact mirror of [`Completion`] at the other end of the pipe. Without it,
+/// a panic in `emit` skips the teardown, workers stay parked on `space`, and
+/// `thread::scope` blocks forever joining them — a hang, which is the one
+/// outcome worse than a crash. Fixing that on the worker side and not the
+/// collector side would not be defensible.
+struct Teardown<'a> {
+    state: &'a Mutex<Shared>,
+    space: &'a Condvar,
+    wake: &'a Condvar,
+    stop: &'a AtomicBool,
+}
+
+impl Drop for Teardown<'_> {
+    fn drop(&mut self) {
+        // Never `unwrap` here: this `Drop` runs during an unwind, and a panic
+        // inside it would abort the process. Same discipline as `Completion`.
+        if let Ok(mut st) = self.state.lock() {
+            // The `Done`s still in the collector's batch are dropped without
+            // passing through `recycle`, so their bytes would be counted
+            // against the backpressure predicate forever. Zeroing here makes
+            // the predicate correct rather than merely short-circuited, so the
+            // wakeup below does not depend on `stop` alone.
+            st.batch_bytes = 0;
+            // Stored while the lock is held so the mutex's release/acquire edge
+            // carries it too; the `Release` ordering covers the lock-free check
+            // at the top of the worker loop.
+            self.stop.store(true, Ordering::Release);
+        } else {
+            self.stop.store(true, Ordering::Release);
+        }
+        self.space.notify_all();
+        self.wake.notify_all();
+    }
+}
+
 /// Call `work`, converting a panic into an error on that archive.
 ///
 /// The buffer is cleared on panic: a job that died mid-write may have left a
@@ -294,7 +332,7 @@ where
                     // deadlock-free. See the module docs.
                     {
                         let mut st = state.lock().unwrap();
-                        while !stop.load(Ordering::Relaxed)
+                        while !stop.load(Ordering::Acquire)
                             && st.held + st.batch_bytes > spill_bytes
                         {
                             st = space.wait(st).unwrap();
@@ -304,7 +342,7 @@ where
                     // Checked before claiming work, so a write failure or a
                     // closed pipe stops the sweep at the next archive boundary
                     // instead of at the end of the month.
-                    if stop.load(Ordering::Relaxed) {
+                    if stop.load(Ordering::Acquire) {
                         return;
                     }
                     let p = next.fetch_add(1, Ordering::Relaxed);
@@ -340,6 +378,10 @@ where
         // The collector. Runs on the calling thread so `emit` needs to be
         // neither `Send` nor `Sync`, and so ordering decisions live in exactly
         // one place. `head` walks `order`, not raw positions.
+        // Armed for the whole of the collector's life, so the normal exit and
+        // the unwinding exit run identical teardown.
+        let _teardown = Teardown { state: &state, space: &space, wake: &wake, stop: &stop };
+
         let mut head = 0usize;
         let mut emitted = vec![false; n];
         let mut emitted_count = 0usize;
@@ -417,7 +459,7 @@ where
                 let r = emit(&d);
                 recycle(&state, &space, d.buffer, spill_bytes);
                 if let Err(e) = r {
-                    stop.store(true, Ordering::Relaxed);
+                    stop.store(true, Ordering::Release);
                     write_err = Some(e);
                     break 'collect;
                 }
@@ -426,9 +468,8 @@ where
 
         // Anything still parked is dropped on the way out of the scope; only
         // reachable on the early-stop path, where it is output nobody wants.
-        // Blocked producers must be released, or the scope would never join.
-        stop.store(true, Ordering::Relaxed);
-        space.notify_all();
+        // Waking the blocked producers is `Teardown`'s job, on this path and on
+        // the unwinding one alike.
     });
 
     match write_err {
