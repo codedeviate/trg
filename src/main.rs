@@ -10,7 +10,14 @@ fn main() -> anyhow::Result<()> {
     let mut matched = false;
     let mut partial = false;
 
-    for p in &args.paths {
+    let (items, path_errors) = trg::source::resolve(&args.paths);
+    let globs = trg::source::build_globs(&args.globs)?;
+    for e in &path_errors {
+        eprintln!("trg: {e}");
+        partial = true;
+    }
+
+    for p in &items {
         let mut buf = bw.buffer();
         let mut printer = print::build(&args.print, &mut buf);
         let outcome = search::search_archive(
@@ -19,7 +26,7 @@ fn main() -> anyhow::Result<()> {
             &mut searcher,
             &mut printer,
             args.archive_sep,
-            None,
+            globs.as_ref(),
             args.search.max_count,
         );
         if printer.has_written() {

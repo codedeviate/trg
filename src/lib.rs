@@ -3,3 +3,4 @@ pub mod cli;
 pub mod print;
 pub mod search;
 pub mod sniff;
+pub mod source;

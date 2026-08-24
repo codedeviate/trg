@@ -147,6 +147,18 @@ pub fn search_archive(
     };
 
     crate::archive::for_each_member(rdr, globs, |member, r| {
+        // `-g` filters at the finest available granularity: tar member names
+        // for archives (handled inside `for_each_member`), and the file's
+        // own path for plain (non-tar) files, which arrive here as a single
+        // member named `""`. Without this, a mixed sweep of live logs plus
+        // archives would ignore `-g` for every live log.
+        if member.is_empty() {
+            if let Some(set) = globs {
+                if !set.is_match(path) {
+                    return Ok(());
+                }
+            }
+        }
         let display = display_path(path, member, sep);
         let sink = printer.sink_with_path(m, display.as_str());
         let mut capped = MaxCount::new(sink, max_count);
