@@ -370,6 +370,14 @@ where
     let mut write_err: Option<std::io::Error> = None;
 
     std::thread::scope(|scope| {
+        // Armed before a single worker is spawned, so a panic from
+        // `scope.spawn` itself — the OS refusing a thread — still runs
+        // teardown instead of leaving spawned workers parked on
+        // backpressure forever. The normal exit and the unwinding exit
+        // run identical teardown either way, since this lives until the
+        // end of the same scope regardless of where it's declared.
+        let _teardown = Teardown { state: &state, space: &space, wake: &wake, stop: &stop };
+
         for _ in 0..live {
             let (next, stop, state, wake) = (&next, &stop, &state, &wake);
             let space = &space;
@@ -443,9 +451,6 @@ where
         // The collector. Runs on the calling thread so `emit` needs to be
         // neither `Send` nor `Sync`, and so ordering decisions live in exactly
         // one place. `head` walks `order`, not raw positions.
-        // Armed for the whole of the collector's life, so the normal exit and
-        // the unwinding exit run identical teardown.
-        let _teardown = Teardown { state: &state, space: &space, wake: &wake, stop: &stop };
 
         let mut head = 0usize;
         let mut emitted = vec![false; n];
