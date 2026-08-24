@@ -540,3 +540,132 @@ fn emission_order_follows_job_index_not_slot_position() {
 
     assert_eq!(seen.into_inner().unwrap(), vec![10, 20, 30, 40]);
 }
+
+// ---------------------------------------------------------------------------
+// Fix round 2: producer-side backpressure.
+// ---------------------------------------------------------------------------
+
+/// Runs `f` on its own thread and fails the test if it has not finished in
+/// `secs`. Every backpressure test needs this: the failure mode being guarded
+/// against is a deadlock, and a deadlock inside the test would wedge the suite
+/// instead of reporting.
+fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(Duration::from_secs(secs)) {
+        Ok(v) => v,
+        Err(e) => panic!("did not finish within {secs}s ({e:?}) — deadlock or missing wakeup"),
+    }
+}
+
+#[test]
+fn workers_are_held_back_instead_of_running_the_heap_up() {
+    // The adversarial shape: far more jobs than workers, each producing output
+    // well above what a single archive would, and an `emit` slow enough that
+    // the collector cannot keep up. Without backpressure nothing stops a worker
+    // starting the next archive, so live buffers track the *job count*: 300
+    // jobs meant ~300 live megabyte buffers under a 64 MB cap, because the
+    // spill flush moves bytes from `slots` into the collector's batch — which
+    // decrements `held` without freeing anything.
+    const JOBS: usize = 300;
+    const PER_JOB: usize = 1024 * 1024;
+    const SPILL: usize = 64 * 1024 * 1024;
+    const WORKERS: usize = 8;
+
+    let made = within(120, || {
+        let made = Arc::new(AtomicUsize::new(0));
+        let m = Arc::clone(&made);
+        trg::sched::run(
+            jobs(JOBS),
+            trg::sched::Config { workers: WORKERS, sorted: true, spill_bytes: SPILL },
+            move || {
+                m.fetch_add(1, AtomicOrdering::SeqCst);
+                termcolor::Buffer::no_color()
+            },
+            || (),
+            |_job, _c: &mut (), b| {
+                use std::io::Write;
+                b.write_all(&vec![b'y'; PER_JOB]).unwrap();
+                trg::archive::Outcome::default()
+            },
+            |_done: &Done| {
+                std::thread::sleep(Duration::from_millis(3));
+                Ok(())
+            },
+        )
+        .unwrap();
+        made.load(AtomicOrdering::SeqCst)
+    });
+
+    // Target invariant: spill_bytes + workers * max_archive_output, i.e. about
+    // 64 + 8 buffers here. The generous ceiling leaves room for the overshoot
+    // from workers already running when the cap is reached, while still being
+    // nowhere near the 300 that no backpressure produces.
+    let peak_mb = made * PER_JOB / (1024 * 1024);
+    assert!(
+        made <= 150,
+        "{made} buffers ({peak_mb} MB) live under a {} MB cap; \
+         live buffers are tracking the job count, not the window",
+        SPILL / (1024 * 1024)
+    );
+}
+
+#[test]
+fn backpressure_does_not_deadlock_when_the_cap_is_below_one_job() {
+    // The nastiest case for a producer-side wait: every single job on its own
+    // exceeds the cap, so a worker is blocked from the moment the first result
+    // lands. Progress depends entirely on the collector being able to drain and
+    // recycle without a worker first releasing something.
+    let seen = within(60, || {
+        let seen: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+        trg::sched::run(
+            jobs(24),
+            trg::sched::Config { workers: 4, sorted: true, spill_bytes: 1024 },
+            buf,
+            || (),
+            |_job, _c: &mut (), b| {
+                use std::io::Write;
+                b.write_all(&vec![b'y'; 64 * 1024]).unwrap();
+                trg::archive::Outcome::default()
+            },
+            |_done: &Done| Ok(()),
+        )
+        .unwrap();
+        seen.lock().unwrap().len();
+        seen.into_inner().unwrap()
+    });
+    let _ = seen;
+}
+
+#[test]
+fn backpressure_keeps_the_order_it_is_supposed_to_keep() {
+    // A cap that bounds memory must not become a cap on ordering depth — the
+    // failure my first attempt produced, where results came out [3,2,1,0,...].
+    let got = within(60, || {
+        let seen = Mutex::new(Vec::new());
+        trg::sched::run(
+            jobs(64),
+            trg::sched::Config { workers: 8, sorted: true, spill_bytes: 8 * 1024 * 1024 },
+            buf,
+            || (),
+            |job, _c: &mut (), b| {
+                use std::io::Write;
+                // job 0 is the straggler every later job has to wait behind
+                if job.index == 0 {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                b.write_all(&vec![b'y'; 16 * 1024]).unwrap();
+                trg::archive::Outcome::default()
+            },
+            |done: &Done| {
+                seen.lock().unwrap().push(done.index);
+                Ok(())
+            },
+        )
+        .unwrap();
+        seen.into_inner().unwrap()
+    });
+    assert_eq!(got, (0..64).collect::<Vec<_>>(), "backpressure must not reorder output");
+}

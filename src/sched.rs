@@ -116,8 +116,13 @@ struct Shared {
     /// Output buffers not currently in use, kept so their allocations are
     /// reused instead of being rebuilt per archive.
     pool: Vec<termcolor::Buffer>,
-    /// Bytes currently parked in `slots`, for the spill check.
+    /// Bytes currently parked in `slots`, waiting for their turn in the order.
     held: usize,
+    /// Bytes the collector has drained out of `slots` but not yet emitted and
+    /// recycled. Counted separately and added to `held` for backpressure,
+    /// because draining moves bytes out of `slots` without freeing anything —
+    /// missing this is what let live buffers track the job count.
+    batch_bytes: usize,
     /// Jobs finished so far, so the collector knows when to stop waiting.
     finished: usize,
 }
@@ -261,9 +266,14 @@ where
         ready: VecDeque::new(),
         pool: Vec::new(),
         held: 0,
+        batch_bytes: 0,
         finished: 0,
     });
     let wake = Condvar::new();
+    // Workers wait here for the collector to free output bytes. A second
+    // condvar on the *same* mutex, so a worker's check-and-wait is atomic
+    // against the collector's decrement and no wakeup can be missed.
+    let space = Condvar::new();
 
     let mut write_err: Option<std::io::Error> = None;
 
@@ -272,11 +282,25 @@ where
     std::thread::scope(|scope| {
         for _ in 0..live {
             let (next, stop, state, wake) = (&next, &stop, &state, &wake);
+            let space = &space;
             let (jobs, work, make_buffer, make_worker) =
                 (&jobs, &work, &make_buffer, &make_worker);
             scope.spawn(move || {
                 let mut ctx = make_worker();
                 loop {
+                    // Producer-side backpressure. Waiting *before* claiming a
+                    // job means a blocked worker holds nothing at all — no
+                    // buffer, no slot, no job — which is what makes the wait
+                    // deadlock-free. See the module docs.
+                    {
+                        let mut st = state.lock().unwrap();
+                        while !stop.load(Ordering::Relaxed)
+                            && st.held + st.batch_bytes > spill_bytes
+                        {
+                            st = space.wait(st).unwrap();
+                        }
+                    }
+
                     // Checked before claiming work, so a write failure or a
                     // closed pipe stops the sweep at the next archive boundary
                     // instead of at the end of the month.
@@ -335,7 +359,9 @@ where
                             }
                             match st.slots[order[head]].take() {
                                 Some(d) => {
-                                    st.held -= d.buffer.as_slice().len();
+                                    let len = d.buffer.as_slice().len();
+                                    st.held -= len;
+                                    st.batch_bytes += len;
                                     emitted[head] = true;
                                     head += 1;
                                     batch.push(d);
@@ -355,7 +381,9 @@ where
                     } else {
                         while let Some(p) = st.ready.pop_front() {
                             if let Some(d) = st.slots[p].take() {
-                                st.held -= d.buffer.as_slice().len();
+                                let len = d.buffer.as_slice().len();
+                                st.held -= len;
+                                st.batch_bytes += len;
                                 batch.push(d);
                             }
                         }
@@ -387,7 +415,7 @@ where
             for d in batch.drain(..) {
                 emitted_count += 1;
                 let r = emit(&d);
-                recycle(&state, d.buffer, spill_bytes, live);
+                recycle(&state, &space, d.buffer, spill_bytes);
                 if let Err(e) = r {
                     stop.store(true, Ordering::Relaxed);
                     write_err = Some(e);
@@ -398,7 +426,9 @@ where
 
         // Anything still parked is dropped on the way out of the scope; only
         // reachable on the early-stop path, where it is output nobody wants.
+        // Blocked producers must be released, or the scope would never join.
         stop.store(true, Ordering::Relaxed);
+        space.notify_all();
     });
 
     match write_err {
@@ -412,19 +442,26 @@ where
 /// volume for the rest of the run. `termcolor::Buffer` exposes no `capacity`,
 /// so the length it reached stands in for it.
 ///
-/// The pool is capped at the worker count: a buffer beyond that is one the
-/// workers demonstrably did not need, and keeping it would hold its allocation
-/// for the rest of the run.
-fn recycle(state: &Mutex<Shared>, mut buffer: termcolor::Buffer, spill_bytes: usize, cap: usize) {
-    if buffer.as_slice().len() > spill_bytes {
-        return;
-    }
+/// This is the only place output bytes are actually freed, so it is also where
+/// backpressure is released. The pool itself needs no size cap: the number of
+/// buffers in existence is now bounded by the backpressure invariant, and
+/// capping it would only throw away the allocations the pool exists to keep.
+fn recycle(
+    state: &Mutex<Shared>,
+    space: &Condvar,
+    mut buffer: termcolor::Buffer,
+    spill_bytes: usize,
+) {
+    let len = buffer.as_slice().len();
+    let oversized = len > spill_bytes;
     buffer.clear();
-    if let Ok(mut st) = state.lock()
-        && st.pool.len() < cap
-    {
-        st.pool.push(buffer);
+    if let Ok(mut st) = state.lock() {
+        st.batch_bytes -= len;
+        if !oversized {
+            st.pool.push(buffer);
+        }
     }
+    space.notify_all();
 }
 
 /// Emit everything that has landed but is out of turn, in index order. The
@@ -438,7 +475,11 @@ fn flush_parked(
 ) {
     for (h, flag) in emitted.iter_mut().enumerate().skip(head) {
         if let Some(d) = st.slots[order[h]].take() {
-            st.held -= d.buffer.as_slice().len();
+            // Note this does not relieve backpressure: the bytes move from
+            // `held` to `batch_bytes`, and only `recycle` frees them.
+            let len = d.buffer.as_slice().len();
+            st.held -= len;
+            st.batch_bytes += len;
             *flag = true;
             batch.push(d);
         }
