@@ -3,6 +3,14 @@ name = "trg"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "trg"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trg"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 flate2 = "1.1.9"

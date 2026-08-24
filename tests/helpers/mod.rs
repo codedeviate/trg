@@ -3,6 +3,9 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+/// Owns the `TempDir`, so it must be kept alive for as long as `path` is used:
+/// binding only the field (`let p = helpers::tgz(..).path;`) drops the temp dir
+/// immediately and the file vanishes before you can open it.
 pub struct Fixture {
     pub dir: tempfile::TempDir,
     pub path: PathBuf,
