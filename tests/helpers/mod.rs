@@ -32,6 +32,38 @@ fn write(dir: tempfile::TempDir, name: &str, bytes: &[u8]) -> Fixture {
     Fixture { dir, path }
 }
 
+fn zstd_bytes(raw: &[u8]) -> Vec<u8> {
+    zstd::stream::encode_all(raw, 3).unwrap()
+}
+
+/// A `.tar.zst`: same shape as `tgz`, different compression wrapper.
+pub fn tar_zst(name: &str, members: &[(&str, &[u8])]) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &zstd_bytes(&build_tar(members)))
+}
+
+/// A `.tar.zst` whose member is itself zstd-compressed — what logrotate
+/// produces on a zstd-configured host.
+pub fn tar_zst_nested_zst(name: &str, inner: &str, body: &[u8]) -> Fixture {
+    let inner_zst = zstd_bytes(body);
+    tar_zst(name, &[(inner, inner_zst.as_slice())])
+}
+
+/// A `.tgz` whose member is zstd-compressed — mixed nesting, which is what a
+/// host mid-migration actually leaves behind.
+pub fn tgz_nested_zst(name: &str, inner: &str, body: &[u8]) -> Fixture {
+    let inner_zst = zstd_bytes(body);
+    tgz(name, &[(inner, inner_zst.as_slice())])
+}
+
+/// A `.tar.zst` cut off mid-stream.
+pub fn tar_zst_truncated(name: &str, members: &[(&str, &[u8])], keep: f64) -> Fixture {
+    let full = zstd_bytes(&build_tar(members));
+    let n = ((full.len() as f64) * keep) as usize;
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &full[..n.max(8)])
+}
+
 fn gzip(raw: &[u8]) -> Vec<u8> {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     e.write_all(raw).unwrap();

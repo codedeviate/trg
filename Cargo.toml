@@ -26,11 +26,14 @@ libdeflater = "1.26.0"
 num_cpus = "1.17.0"
 tar = "0.4.46"
 termcolor = "1.4.1"
+zstd = "0.13.3"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
 libc = "0.2.189"
+tar = "0.4.46"
 tempfile = "3.27.0"
+zstd = "0.13.3"
 
 [features]
 # zlib-ng by default: measured on Linux/aarch64 over the 11.5 GB benchmark

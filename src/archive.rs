@@ -147,6 +147,9 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + S
 
     Ok(match format {
         Format::Gzip => Guarded::boxed(flate2::read::MultiGzDecoder::new(body), guard),
+        // `zstd`'s reader is streaming like flate2's, so the bounded-memory
+        // guarantee and the cache guard carry over unchanged.
+        Format::Zstd => Guarded::boxed(zstd::stream::read::Decoder::new(body)?, guard),
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     })
 }
@@ -310,11 +313,20 @@ where
             }
         };
 
-        let res = if sniff(&inner_head) == Format::Gzip {
-            let mut dec = flate2::read::MultiGzDecoder::new(&mut inner);
-            f(&name, &mut dec)
-        } else {
-            f(&name, &mut inner)
+        // Exactly one level, and every compression format — logrotate leaves
+        // `access.log.1.gz` (or `.zst`) inside the archive, so a check that
+        // named only gzip would silently hand a compressed member to the
+        // searcher as binary.
+        let res = match sniff(&inner_head) {
+            Format::Gzip => {
+                let mut dec = flate2::read::MultiGzDecoder::new(&mut inner);
+                f(&name, &mut dec)
+            }
+            Format::Zstd => match zstd::stream::read::Decoder::new(&mut inner) {
+                Ok(mut dec) => f(&name, &mut dec),
+                Err(e) => Err(e),
+            },
+            _ => f(&name, &mut inner),
         };
 
         match res {

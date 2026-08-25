@@ -30,6 +30,14 @@ pub enum Strategy {
     Buffer { capacity: usize, ceiling: usize },
 }
 
+/// Does this file begin with the gzip magic? The buffered path is gzip-only.
+fn is_gzip(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut m = [0u8; 2];
+    f.read_exact(&mut m).is_ok() && m == [0x1f, 0x8b]
+}
+
 /// Last four bytes of a gzip stream: uncompressed size modulo 2^32.
 pub fn isize_hint(path: &Path) -> Option<u64> {
     let mut f = std::fs::File::open(path).ok()?;
@@ -52,6 +60,12 @@ fn effective_ceiling(budget: u64) -> u64 {
 }
 
 pub fn choose(mode: InflateMode, path: &Path, budget: u64) -> Strategy {
+    // The whole-buffer path is libdeflate, which is gzip-only, and `isize_hint`
+    // reads gzip's 4-byte trailer. Any other compressed format streams — which
+    // is the safe direction: it costs a slower path, never a wrong answer.
+    if !is_gzip(path) {
+        return Strategy::Stream;
+    }
     match mode {
         InflateMode::Stream => Strategy::Stream,
         InflateMode::Buffer => buffer_within_budget(path, budget, isize_hint(path)),
