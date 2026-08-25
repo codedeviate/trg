@@ -1,0 +1,357 @@
+//! Search configuration and the `-m` sink. Deliberately thin: the matching
+//! engine is ripgrep's, unmodified.
+
+use std::io;
+use std::path::Path;
+
+use grep_searcher::{
+    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
+};
+
+pub struct SearchOpts {
+    pub case_insensitive: bool,
+    pub smart_case: bool,
+    pub word: bool,
+    pub fixed: bool,
+    pub invert: bool,
+    pub before: usize,
+    pub after: usize,
+    pub line_numbers: bool,
+    /// `-a`: search members that look binary.
+    pub text: bool,
+    pub max_count: Option<u64>,
+    pub heap_limit: usize,
+    /// `--crlf`: treat CRLF as the line terminator. Off by default — see
+    /// `agrees_with_rg_on_anchored_patterns` in `tests/differential.rs` for
+    /// why this must never be hard-coded on.
+    pub crlf: bool,
+}
+
+impl Default for SearchOpts {
+    fn default() -> Self {
+        Self {
+            case_insensitive: false,
+            smart_case: false,
+            word: false,
+            fixed: false,
+            invert: false,
+            before: 0,
+            after: 0,
+            line_numbers: true,
+            text: false,
+            max_count: None,
+            heap_limit: 16 * 1024 * 1024,
+            crlf: false,
+        }
+    }
+}
+
+pub fn build_matcher(
+    pats: &[String],
+    o: &SearchOpts,
+) -> anyhow::Result<grep_regex::RegexMatcher> {
+    let mut b = grep_regex::RegexMatcherBuilder::new();
+    b.case_insensitive(o.case_insensitive)
+        .case_smart(o.smart_case)
+        .word(o.word)
+        .fixed_strings(o.fixed)
+        .multi_line(false)
+        .crlf(o.crlf);
+    Ok(b.build_many(pats)?)
+}
+
+pub fn build_searcher(o: &SearchOpts) -> Searcher {
+    let mut b = SearcherBuilder::new();
+    b.line_number(o.line_numbers)
+        .before_context(o.before)
+        .after_context(o.after)
+        .invert_match(o.invert)
+        .heap_limit(Some(o.heap_limit))
+        .binary_detection(if o.text {
+            BinaryDetection::none()
+        } else {
+            BinaryDetection::quit(b'\x00')
+        });
+    if o.crlf {
+        b.line_terminator(grep_matcher::LineTerminator::crlf());
+    }
+    b.build()
+}
+
+/// `-m/--max-count`. `StandardBuilder` has no `max_matches`, so the limit is
+/// enforced by wrapping the printer's sink and returning `Ok(false)` from
+/// `matched`, which stops the search.
+pub struct MaxCount<S> {
+    inner: S,
+    limit: Option<u64>,
+    seen: u64,
+    binary_at: Option<u64>,
+}
+
+impl<S: Sink> MaxCount<S> {
+    pub fn new(inner: S, limit: Option<u64>) -> Self {
+        Self { inner, limit, seen: 0, binary_at: None }
+    }
+
+    /// Whether the searcher reported any match at all for this member.
+    ///
+    /// This, and not the printer's own summary, is the exit code's source of
+    /// truth. See the note on `matched` below for why the difference matters.
+    pub fn saw_match(&self) -> bool {
+        self.seen > 0
+    }
+
+    /// Matched, then ran into binary data — the one combination that makes
+    /// `SummarySink` retract its count and print nothing.
+    ///
+    /// Read from the searcher's own `SinkFinish`, which is the same value
+    /// `SummarySink::finish` consults before squashing `match_count` to zero,
+    /// so the two can never disagree about whether a count was suppressed.
+    /// Only `-c` cares: `-l` prints the path, `--json` emits its records and
+    /// the default printer emits a binary warning of its own.
+    pub fn count_suppressed_by_binary(&self) -> bool {
+        self.seen > 0 && self.binary_at.is_some()
+    }
+}
+
+impl<S: Sink> Sink for MaxCount<S> {
+    type Error = S::Error;
+
+    fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, S::Error> {
+        // Counted *before* the inner sink is consulted, and this ordering is
+        // load-bearing twice over.
+        //
+        // A printer is allowed to say "stop, I have seen enough" — `-l` and
+        // `-q` both quit on their first match — and a printer is allowed to
+        // revise what it reports afterwards: `SummarySink::finish` zeroes its
+        // own `match_count` whenever binary data was seen under
+        // `BinaryDetection::quit`, which grep-printer's source calls "an
+        // unfortunate inconsistency ... we accept the bug". That is a
+        // reasonable answer to rg's question ("is this file worth showing
+        // you?") and the wrong answer to ours, because exit 1 here is a
+        // positive claim that the logs are clean.
+        //
+        // Counting first makes `seen` the record of what the *searcher*
+        // reported, which no printer can overrule and no early stop can
+        // truncate. The `-m` limit is unaffected: when the inner sink stops the
+        // search, its own count no longer decides anything.
+        self.seen += 1;
+        if !self.inner.matched(s, m)? {
+            return Ok(false);
+        }
+        Ok(match self.limit {
+            Some(n) => self.seen < n,
+            None => true,
+        })
+    }
+
+    fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> Result<bool, S::Error> {
+        self.inner.context(s, c)
+    }
+
+    fn context_break(&mut self, s: &Searcher) -> Result<bool, S::Error> {
+        self.inner.context_break(s)
+    }
+
+    fn binary_data(&mut self, s: &Searcher, off: u64) -> Result<bool, S::Error> {
+        self.inner.binary_data(s, off)
+    }
+
+    // `Sink` gives `begin` and `finish` default no-op implementations, so a
+    // wrapper that forgets to forward them silently swallows them. That is not
+    // cosmetic: `SummarySink` writes its whole result — the `-c` count line,
+    // the `-l` path — from `finish`, and resets its per-search match count in
+    // `begin`. Without these two, `-c` and `-l` print nothing at all.
+    fn begin(&mut self, s: &Searcher) -> Result<bool, S::Error> {
+        self.seen = 0;
+        self.binary_at = None;
+        self.inner.begin(s)
+    }
+
+    fn finish(&mut self, s: &Searcher, f: &SinkFinish) -> Result<(), S::Error> {
+        self.binary_at = f.binary_byte_offset();
+        self.inner.finish(s, f)
+    }
+}
+
+/// `archive.tgz:logs/vhost03.access.log`, or just the path for a plain file.
+pub fn display_path(archive: &Path, member: &str, sep: char) -> String {
+    if member.is_empty() {
+        archive.display().to_string()
+    } else {
+        format!("{}{}{}", archive.display(), sep, member)
+    }
+}
+
+/// Everything a search needs that is the same for every archive in a run.
+///
+/// Borrowed and shared across the whole scheduler: it is `Sync`, so one
+/// instance is read by every worker. The per-job values — the path, the
+/// `Searcher`, the printer, and the inflate strategy — stay as arguments,
+/// because each worker must own its own (`Searcher` is not `Sync`) and the
+/// strategy is chosen per file from its size.
+pub struct SearchCtx<'a> {
+    pub matcher: &'a grep_regex::RegexMatcher,
+    pub sep: char,
+    pub globs: Option<&'a globset::GlobSet>,
+    pub max_count: Option<u64>,
+    /// A request, not a decision: `open_decoded_dropping` narrows it to
+    /// archives, so a plain live logfile is never evicted.
+    pub drop_cache: bool,
+    /// Whether the run is in `-c` mode. Not used to choose a printer — `cli`
+    /// already did that — only to decide whether a suppressed count is worth a
+    /// note on stderr.
+    pub count_mode: bool,
+}
+
+/// Whether `-g` excludes this input, for the one case `for_each_member` cannot
+/// decide on its own.
+///
+/// `-g` filters at the finest available granularity: tar member names for
+/// archives, which `for_each_member` applies itself, and the file's own path
+/// for plain (non-tar) files, which arrive here as a single member named `""`.
+/// Without this second half, a mixed sweep of live logs plus archives would
+/// ignore `-g` for every live log.
+fn excluded_plain_file(member: &str, path: &Path, globs: Option<&globset::GlobSet>) -> bool {
+    member.is_empty() && globs.is_some_and(|set| !set.is_match(path))
+}
+
+/// What one member's search concluded, beyond the bytes it printed.
+pub struct MemberVerdict {
+    pub matched: bool,
+    /// The member matched but `-c` printed no count line for it.
+    pub count_suppressed: bool,
+}
+
+/// Search one member, returning whether it matched.
+///
+/// "Did this member match" comes from [`MaxCount::saw_match`] — the searcher's
+/// own tally — and from neither of the two tempting alternatives. Not from
+/// whether bytes reached the buffer: `-q` matches and writes nothing, and `-c`
+/// writes a line whose content is a count. And not from the sink's
+/// `has_match()` either, because `SummarySink` retracts that after seeing
+/// binary data, which would make `-c` exit 1 on an archive `-l`, `-q`,
+/// `--json` and the default mode all agree matched.
+fn search_member(
+    printer: &mut crate::print::Printer<'_>,
+    m: &grep_regex::RegexMatcher,
+    s: &mut Searcher,
+    r: &mut dyn io::Read,
+    display: &str,
+    max_count: Option<u64>,
+) -> io::Result<MemberVerdict> {
+    // The three printers have unrelated sink types, so the body is monomorphic
+    // per arm; a macro keeps the one real sequence — build sink, cap it,
+    // search, ask it what it saw — written once.
+    macro_rules! run {
+        ($p:expr) => {{
+            let sink = $p.sink_with_path(m, display);
+            let mut capped = MaxCount::new(sink, max_count);
+            let res = s.search_reader(m, r, &mut capped);
+            // Read the verdict before propagating: a member that matched and
+            // *then* hit a read error still matched, and the error is recorded
+            // separately by the caller.
+            let hit = capped.saw_match();
+            let suppressed = capped.count_suppressed_by_binary();
+            res.map_err(io::Error::other)?;
+            MemberVerdict { matched: hit, count_suppressed: suppressed }
+        }};
+    }
+
+    Ok(match printer {
+        crate::print::Printer::Standard(p) => run!(p),
+        crate::print::Printer::Summary(p) => run!(p),
+        crate::print::Printer::Json(p) => run!(p),
+    })
+}
+
+/// Search one archive into `printer`'s buffer.
+pub fn search_archive(
+    ctx: &SearchCtx<'_>,
+    path: &Path,
+    s: &mut Searcher,
+    printer: &mut crate::print::Printer<'_>,
+    strategy: crate::inflate::Strategy,
+) -> crate::archive::Outcome {
+    let (m, sep, globs, max_count) = (ctx.matcher, ctx.sep, ctx.globs, ctx.max_count);
+    let rdr = match crate::archive::open_decoded_dropping(path, strategy, ctx.drop_cache) {
+        Ok(r) => r,
+        Err(e) => {
+            let mut o = crate::archive::Outcome::default();
+            o.errors.push(format!("{}: {e}", path.display()));
+            return o;
+        }
+    };
+
+    let mut matched = false;
+    let mut notes: Vec<String> = Vec::new();
+    let mut out = crate::archive::for_each_member(rdr, globs, |member, r| {
+        if excluded_plain_file(member, path, globs) {
+            return Ok(());
+        }
+        let display = display_path(path, member, sep);
+        let v = search_member(printer, m, s, r, &display, max_count)?;
+        matched |= v.matched;
+        // `-c` is otherwise the only mode that goes completely silent on a
+        // member that matched and then hit binary data: stdout stays empty and
+        // the exit code stays 0, so `n=$(trg -c PAT a.tgz)` yields '' and a
+        // script testing `((n>0))` concludes the logs are clean. stdout must
+        // not change — it is rg-compatible, and the count really is unknown —
+        // so the correction goes to stderr, where it costs a pipeline nothing
+        // and an operator everything.
+        if ctx.count_mode && v.count_suppressed {
+            notes.push(format!("{display}: binary data; count suppressed"));
+        }
+        Ok(())
+    });
+    out.matched = matched;
+    out.notes = notes;
+    out
+}
+
+/// `-T/--list-members`: print member paths without searching.
+///
+/// Deliberately does **not** short-circuit on the first member: the exit-code
+/// contract applies here too, so the whole archive is walked and any failure
+/// on the way lands in `Outcome.errors`.
+///
+/// Lists every regular member, including ones a *search* would skip as binary.
+/// Listing is a question about the tar header; skipping a binary member is a
+/// question about its content, which `-T` never reads.
+///
+/// Takes the same `ctx` and `strategy` as [`search_archive`], and opens through
+/// the same [`crate::archive::open_decoded_dropping`], because `-T` walks
+/// exactly as many bytes of exactly the same archives. Opening through the
+/// plain `open_decoded` instead would make `-T` the one mode that ignores
+/// `--inflate` and leaves a sweep's worth of archive pages in the cache —
+/// precisely the pollution the cache-dropping work exists to prevent.
+pub fn list_members(
+    ctx: &SearchCtx<'_>,
+    path: &Path,
+    strategy: crate::inflate::Strategy,
+    out: &mut dyn io::Write,
+) -> crate::archive::Outcome {
+    let (sep, globs) = (ctx.sep, ctx.globs);
+    let rdr = match crate::archive::open_decoded_dropping(path, strategy, ctx.drop_cache) {
+        Ok(r) => r,
+        Err(e) => {
+            let mut o = crate::archive::Outcome::default();
+            o.errors.push(format!("{}: {e}", path.display()));
+            return o;
+        }
+    };
+
+    let mut listed = false;
+    let mut outcome = crate::archive::for_each_member(rdr, globs, |member, _| {
+        if excluded_plain_file(member, path, globs) {
+            return Ok(());
+        }
+        listed = true;
+        writeln!(out, "{}", display_path(path, member, sep))
+    });
+    // `-T` has no notion of a match, so "listed something" is what stands in
+    // for it: `trg -T ... ; echo $?` should say 1 when an archive held nothing
+    // the globs would accept, the same shape of answer as a search.
+    outcome.matched = listed;
+    outcome
+}
