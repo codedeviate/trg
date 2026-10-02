@@ -39,15 +39,16 @@ features, patch for fixes.
 
 ## Changelog
 
-Every user-visible change gets a line under `## Unreleased` in
+Every user-visible change gets a line under `## [Unreleased]` in
 [CHANGELOG.md](CHANGELOG.md), in the same commit as the change. Internal-only
 work (refactors, test changes) does not need an entry.
 
 To release:
 
 1. Pick the version from the rules above.
-2. Rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD` and add a fresh,
-   empty `## Unreleased` above it.
+2. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh,
+   empty `## [Unreleased]` above it, and update the compare links at the
+   bottom of the file.
 3. Set `version` in `Cargo.toml` (and let `Cargo.lock` follow).
 4. Commit as `chore(release): X.Y.Z` and tag `vX.Y.Z`.
 

@@ -7,9 +7,13 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 How versions are chosen before 1.0.0 is described in
 [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
-## Unreleased
+## [Unreleased]
 
-## 0.2.0 - 2026-08-25
+### Documentation
+
+- Added `README.md`.
+
+## [0.2.0] - 2026-08-25
 
 Shipped as merge `8da74d6`. The version number, tag and this changelog were
 applied afterwards, on 2026-10-02.
@@ -33,7 +37,7 @@ applied afterwards, on 2026-10-02.
 - Added `CHANGELOG.md`, `CONTRIBUTING.md` (versioning and commit conventions)
   and `OUT-OF-SCOPE.md` (non-goals and wishlist).
 
-## 0.1.0 - 2026-08-25
+## [0.1.0] - 2026-08-25
 
 First release: tar-aware search of compressed log archives. Shipped as merge
 `b47a8b4`.
@@ -73,3 +77,6 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/codedeviate/trg/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/codedeviate/trg/releases/tag/v0.1.0
