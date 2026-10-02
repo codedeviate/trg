@@ -107,3 +107,7 @@ builder and the comparison against `zgrep` and `rg`.
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each version
 - [CONTRIBUTING.md](CONTRIBUTING.md) — commit conventions and versioning
 - [OUT-OF-SCOPE.md](OUT-OF-SCOPE.md) — what `trg` will not do, and the wishlist
+
+## License
+
+MIT — see [LICENSE](LICENSE).

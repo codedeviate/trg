@@ -13,6 +13,10 @@ How versions are chosen before 1.0.0 is described in
 
 - Added `README.md`.
 
+### Changed
+
+- Licensed under MIT.
+
 ## [0.2.0] - 2026-08-25
 
 Shipped as merge `8da74d6`. The version number, tag and this changelog were
