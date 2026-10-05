@@ -1,8 +1,8 @@
-# trg
+# targrep
 
-Search inside compressed log archives — `.tgz` and `.tar.zst` — with
-ripgrep's flags, per-member line numbers, and without trashing the page cache
-of the server you are searching on.
+`targrep` — run as `trg` — searches inside compressed log archives (`.tgz`
+and `.tar.zst`) with ripgrep's flags, per-member line numbers, and without
+trashing the page cache of the server you are searching on.
 
 ```console
 $ trg -i 'timeout' /var/log/archive/
