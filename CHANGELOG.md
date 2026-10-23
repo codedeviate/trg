@@ -9,6 +9,11 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/build-linux.sh`: cross-builds a Linux release binary (x86_64 by
+  default, or aarch64) into `dist/`, for copying onto servers by hand.
+
 ## [0.2.1] - 2026-10-05
 
 ### Documentation

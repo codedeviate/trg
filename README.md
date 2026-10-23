@@ -63,6 +63,20 @@ cheaper than the `gzip` binary:
 cargo install --path . --no-default-features
 ```
 
+### A Linux binary to copy onto a server
+
+From macOS or any other host, with `cargo-zigbuild`, `zig` and `cmake`
+installed:
+
+```sh
+scripts/build-linux.sh            # dist/trg-<version>-x86_64-linux
+scripts/build-linux.sh aarch64    # dist/trg-<version>-aarch64-linux
+```
+
+The binary depends on nothing but glibc 2.17 or newer, so it runs on any
+current Debian, Ubuntu or RHEL. Copy it over with `scp` and put it on the
+`PATH` as `trg`.
+
 ## Usage
 
 ```sh
