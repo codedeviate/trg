@@ -9,6 +9,8 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-23
+
 ### Removed
 
 - The whole-buffer inflate path (libdeflate) and the dependency on it. Since
@@ -217,7 +219,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/codedeviate/trg/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/codedeviate/trg/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/codedeviate/trg/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/codedeviate/trg/compare/v0.4.0...v0.5.0
