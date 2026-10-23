@@ -49,15 +49,39 @@ fn push_unique(items: &mut Vec<PathBuf>, seen: &mut HashSet<Identity>, p: PathBu
 }
 
 pub fn resolve(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
+    resolve_with(paths, None)
+}
+
+/// `resolve`, keeping only the walked files that `archive_globs` selects.
+///
+/// Files named on the command line are never filtered, as with `rg -g`: naming
+/// a file is a stronger statement than any pattern.
+///
+/// A glob that selects nothing anywhere in the walk is an error, not an empty
+/// search: the run would otherwise exit 1, the claim that everything asked for
+/// was read and nothing matched, and a typo like `2026-8-*` would read as
+/// clean logs. It is judged across the whole run, so one directory without a
+/// match is normal when another has them.
+pub fn resolve_with(
+    paths: &[PathBuf],
+    archive_globs: Option<&ArchiveGlobs>,
+) -> (Vec<PathBuf>, Vec<String>) {
     let mut items = Vec::new();
     let mut errors = Vec::new();
     let mut seen = HashSet::new();
+    let mut walked_any = false;
+    let mut kept_any = false;
 
     for p in paths {
         match std::fs::metadata(p) {
             Err(e) => errors.push(format!("{}: {e}", p.display())),
             Ok(md) if md.is_dir() => {
+                walked_any = true;
                 let mut found = walk(p, &mut errors);
+                if let Some(g) = archive_globs {
+                    found.retain(|f| g.is_match(p, f));
+                }
+                kept_any |= !found.is_empty();
                 found.sort();
                 for f in found {
                     push_unique(&mut items, &mut seen, f);
@@ -67,7 +91,41 @@ pub fn resolve(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
         }
     }
 
+    if archive_globs.is_some() && walked_any && !kept_any {
+        errors.push("--archive-glob matched no files in the directories searched".to_string());
+    }
+
     (items, errors)
+}
+
+/// `--archive-glob`: which files a directory walk keeps.
+///
+/// Split by shape, the way `.gitignore` reads a pattern: one without a `/`
+/// matches the file name at any depth (`2026-08-*.tgz`), one with a `/`
+/// matches the path relative to the directory that was named (`host1/*.tgz`).
+pub struct ArchiveGlobs {
+    names: globset::GlobSet,
+    paths: globset::GlobSet,
+}
+
+impl ArchiveGlobs {
+    fn is_match(&self, root: &Path, file: &Path) -> bool {
+        file.file_name().is_some_and(|n| self.names.is_match(n))
+            || file.strip_prefix(root).is_ok_and(|rel| self.paths.is_match(rel))
+    }
+}
+
+pub fn build_archive_globs(pats: &[String]) -> anyhow::Result<Option<ArchiveGlobs>> {
+    if pats.is_empty() {
+        return Ok(None);
+    }
+    let mut names = globset::GlobSetBuilder::new();
+    let mut paths = globset::GlobSetBuilder::new();
+    for p in pats {
+        let g = globset::Glob::new(p)?;
+        if p.contains('/') { paths.add(g) } else { names.add(g) };
+    }
+    Ok(Some(ArchiveGlobs { names: names.build()?, paths: paths.build()? }))
 }
 
 /// `standard_filters(false)`: a log directory is not a source tree, so

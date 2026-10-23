@@ -84,7 +84,8 @@ fn run() -> anyhow::Result<RunStatus> {
     let mut matched = false;
     let mut partial = false;
 
-    let (items, path_errors) = trg::source::resolve(&args.paths);
+    let archive_globs = trg::source::build_archive_globs(&args.archive_globs)?;
+    let (items, path_errors) = trg::source::resolve_with(&args.paths, archive_globs.as_ref());
     let globs = trg::source::build_globs(&args.globs)?;
     for e in &path_errors {
         eprintln!("trg: {}", escape::for_stderr(&e.to_string()));

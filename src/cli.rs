@@ -51,6 +51,12 @@ OUTPUT (same meaning as ripgrep):
 
 ARCHIVES:
     -g, --glob PAT        filter MEMBERS inside archives; repeatable
+        --archive-glob PAT
+                          when walking a directory, search only the archives
+                          matching PAT; repeatable. Without a `/` it matches
+                          the file name at any depth, with one the path below
+                          the directory named. Files named explicitly are
+                          always searched. Matching nothing is exit 2
     -T, --list-members    list member paths without searching. Takes no
                           PATTERN at all: every positional is a PATH, so
                           `trg -T *.tgz` lists all of them
@@ -103,6 +109,7 @@ pub struct Args {
     pub patterns: Vec<String>,
     pub paths: Vec<PathBuf>,
     pub globs: Vec<String>,
+    pub archive_globs: Vec<String>,
     pub jobs: usize,
     pub nice: Option<i32>,
     pub drop_cache: bool,
@@ -128,6 +135,7 @@ impl Default for Args {
             patterns: Vec::new(),
             paths: Vec::new(),
             globs: Vec::new(),
+            archive_globs: Vec::new(),
             jobs: 1,
             nice: Some(10),
             drop_cache: true,
@@ -233,6 +241,7 @@ where
             }
 
             Short('g') | Long("glob") => a.globs.push(p.value()?.string()?),
+            Long("archive-glob") => a.archive_globs.push(p.value()?.string()?),
             Short('T') | Long("list-members") => a.list_members = true,
             Long("archive-sep") => {
                 let v = p.value()?.string()?;

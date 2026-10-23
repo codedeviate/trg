@@ -109,6 +109,7 @@ its own.
 ```sh
 trg 'POST /checkout' /var/log/archive/*.tgz
 trg -g '*.error.log' -C 2 'segfault' /var/log/archive/
+trg --archive-glob '2026-08-*' ' 500 ' /var/log/archive/   # August only, any depth
 trg -T 2026-08-24.tar.zst
 trg --turbo -c ' 500 ' /var/log/archive/
 ```
@@ -122,7 +123,7 @@ Run `trg --help` for every option, including `-j`, `--nice`,
 |---|---|
 | `0` | matches found, everything was read |
 | `1` | no matches, everything was read |
-| `2` | something went unread — an error, a truncated archive, or no `PATH` |
+| `2` | something went unread — an error, a truncated archive, no `PATH`, or an `--archive-glob` that matched nothing |
 
 A `1` is a claim that the logs are clean, so `trg` only gives one when it read
 everything. Never trust a `1` you did not get.

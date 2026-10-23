@@ -41,7 +41,6 @@ When an item moves into the codebase, delete it here and record it in
 
 ### Features
 
-- **`--archive-glob`** — filter archives (not members) during a directory walk.
 - **Adaptive `--load-limit`** — a feedback loop that adjusts concurrency during
   the run, instead of a one-off check at startup.
 - **zstd whole-buffer inflate** — zstd's `Frame_Content_Size` header is a more

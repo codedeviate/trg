@@ -9,6 +9,22 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- `--archive-glob PAT`: when walking a directory, search only the archives
+  matching `PAT`; repeatable, and an archive matching any of them is searched.
+  A glob without `/` matches the file name at any depth (`2026-08-*.tgz`); one
+  with `/` matches the path below the directory named (`web1/*.tgz`). Files
+  named on the command line are always searched, as with `rg -g`.
+- An `--archive-glob` that matches no file anywhere in the walk is reported on
+  stderr and exits 2, so a typo can never read as clean logs.
+
+### Changed
+
+- The project now has CI (tests and `clippy -D warnings` on Linux and macOS,
+  plus the `--no-default-features` build), and the scheduler ordering tests no
+  longer depend on timing.
+
 ## [0.4.0] - 2026-10-23
 
 ### Security
