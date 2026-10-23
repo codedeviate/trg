@@ -9,6 +9,14 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Fixed
+
+- A buffered inflate that cannot fit the budget is now refused before it
+  starts. The gzip trailer is a lower bound on the output, and when it already
+  exceeds `--inflate-budget` trg used to decompress the whole archive anyway,
+  find it did not fit, and then stream it all again — twice the work for the
+  same answer.
+
 ## [0.6.0] - 2026-10-23
 
 ### Added

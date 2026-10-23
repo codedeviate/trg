@@ -131,6 +131,18 @@ pub fn inflate_bytes(
     let mut cap = capacity.max(MIN_CAPACITY as usize);
     let ceiling = ceiling.max(cap);
 
+    // The trailer is the last member's size mod 2^32, so the output is at
+    // least that long. Over the ceiling the attempt is certain to fail, and
+    // making it anyway costs a full decompression before the stream fallback
+    // decompresses everything again.
+    let trailer = raw.last_chunk::<4>().map_or(0, |b| u32::from_le_bytes(*b) as usize);
+    if trailer > ceiling {
+        return Err(io::Error::other(format!(
+            "the {ceiling}-byte inflate budget would be exceeded: \
+             the archive inflates to at least {trailer} bytes"
+        )));
+    }
+
     loop {
         let mut d = libdeflater::Decompressor::new();
         let mut out = vec![0u8; cap];
@@ -242,6 +254,19 @@ mod tests {
         let (_d, p) = tmp(&gz(&vec![b'a'; 5000]));
         assert!(matches!(choose(crate::cli::InflateMode::Stream, &p, u64::MAX), Strategy::Stream));
         assert!(matches!(choose(crate::cli::InflateMode::Buffer, &p, 0), Strategy::Buffer { .. }));
+    }
+
+    /// The trailer is a lower bound on the output, so a trailer over the
+    /// ceiling means the attempt cannot fit: refuse before decompressing
+    /// anything. The body here is corrupt, so only a refusal that never
+    /// touched it can name the budget rather than the bad data.
+    #[test]
+    fn a_trailer_over_the_ceiling_is_refused_without_decompressing() {
+        let mut bytes = gz(&incompressible(200_000));
+        bytes[12] ^= 0xff;
+        bytes[13] ^= 0xff;
+        let err = inflate_bytes(&bytes, Path::new("x.gz"), 1 << 16, 100_000).unwrap_err();
+        assert!(err.to_string().contains("budget"), "decompressed despite the trailer: {err}");
     }
 
     #[test]
