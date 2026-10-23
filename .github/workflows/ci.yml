@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    # Linux is the production platform and the only one where the page-cache
+    # residency tests run (tests/residency.rs is `cfg(target_os = "linux")`);
+    # macOS is where trg is developed.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # The differential tests use rg as the line-number oracle. cmake, for the
+      # default zlib-ng backend, is preinstalled on both runner images.
+      - name: Install ripgrep
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+          else
+            brew install ripgrep
+          fi
+
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  no-default-features:
+    # The README's fallback for hosts without cmake: pure-Rust miniz_oxide
+    # instead of zlib-ng. Nothing else builds it, so it would rot unnoticed.
+    name: test (no default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+      - name: Test
+        run: cargo test --no-default-features
