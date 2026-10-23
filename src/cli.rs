@@ -71,9 +71,11 @@ RESOURCES:
         --nice NUM        scheduling priority (default 10)
         --no-nice         do not lower priority
         --no-drop-cache   keep archive pages in the page cache
-        --inflate MODE    auto | stream | buffer (default auto)
+        --inflate MODE    auto | stream | buffer (default auto, which streams).
+                          buffer decompresses each gzip archive whole into
+                          memory; measured, it costs more CPU than streaming
         --inflate-budget SIZE
-                          whole-buffer inflate ceiling (default 64M)
+                          memory ceiling for --inflate=buffer (default 64M)
         --load-limit N    clamp jobs if 1-min load average exceeds N
 
     -h, --help            this message

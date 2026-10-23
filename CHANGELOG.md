@@ -9,6 +9,15 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- `--inflate=auto`, the default, now always streams. It used to decompress gzip
+  archives that inflate to under `--inflate-budget` (64 MB) whole into memory,
+  from a measurement that predates zlib-ng. Re-measured with
+  `bench/inflate_modes.py` on x86-64, arm64 and Linux in a VM, that path never
+  used less total CPU, and on archives inflating to 42 MB it used 8–59% more
+  at 3.6× the memory. `--inflate=buffer` still opts in.
+
 ### Fixed
 
 - A buffered inflate that cannot fit the budget is now refused before it

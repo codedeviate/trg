@@ -1,9 +1,12 @@
 //! Choosing between streaming and whole-buffer inflate.
 //!
-//! Whole-buffer (libdeflate) measured ~14x cheaper on CPU but allocates the
-//! full decompressed size. Streaming (flate2) stays around 10 MB. `auto` reads
-//! the gzip ISIZE trailer as a hint, but correctness comes from the buffered
-//! path growing and finally falling back, not from trusting the hint.
+//! Whole-buffer (libdeflate) allocates the full decompressed size; streaming
+//! (flate2 on zlib-ng) stays around 10 MB. Buffering was once measured ~14x
+//! cheaper on CPU, against the gzip binary and before zlib-ng. Re-measured on
+//! 2026-10-23 (bench/inflate_modes.py) it never used less total CPU than
+//! streaming, so `auto` streams and `--inflate=buffer` is an explicit opt-in.
+//! The buffered path reads the gzip ISIZE trailer as a hint, but correctness
+//! comes from it growing and finally falling back, not from trusting the hint.
 //!
 //! `--inflate-budget` is a **hard ceiling in every mode**, not only `auto`:
 //! explicit `--inflate=buffer` picks the strategy, never a licence to exceed
@@ -60,33 +63,22 @@ fn effective_ceiling(budget: u64) -> u64 {
 }
 
 pub fn choose(mode: InflateMode, path: &Path, budget: u64) -> Strategy {
-    // The whole-buffer path is libdeflate, which is gzip-only, and `isize_hint`
-    // reads gzip's 4-byte trailer. Any other compressed format streams — which
-    // is the safe direction: it costs a slower path, never a wrong answer.
-    if !is_gzip(path) {
-        return Strategy::Stream;
-    }
     match mode {
         InflateMode::Stream => Strategy::Stream,
+        // The whole-buffer path is libdeflate, which is gzip-only, and
+        // `isize_hint` reads gzip's 4-byte trailer. Any other compressed format
+        // streams — which is the safe direction: it costs a slower path, never
+        // a wrong answer.
+        InflateMode::Buffer if !is_gzip(path) => Strategy::Stream,
         InflateMode::Buffer => buffer_within_budget(path, budget, isize_hint(path)),
-        InflateMode::Auto => {
-            let Some(hint) = isize_hint(path) else { return Strategy::Stream };
-            let compressed = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
-
-            // gzip never shrinks incompressible data by more than a rounding
-            // error, so a hint far below the compressed size means the trailer
-            // is not describing this whole stream.
-            if hint < compressed / 2 {
-                return Strategy::Stream;
-            }
-            // A zero budget or a hint that already outgrows it: don't even
-            // try the buffered path. (This is what makes `--inflate-budget 0`
-            // mean "never buffer-inflate" in `auto`.)
-            if hint == 0 || hint > budget {
-                return Strategy::Stream;
-            }
-            buffer_within_budget(path, budget, Some(hint))
-        }
+        // Streaming, always. `auto` used to buffer archives whose trailer
+        // fitted the budget, from a measurement that predates zlib-ng; with
+        // zlib-ng streaming, the buffered path never used less total CPU on
+        // any machine measured on 2026-10-23, and on archives inflating to
+        // 42 MB it used 8% (x86-64) to 59% (arm64) more, at 3.6x the memory.
+        // The mode stays a separate variant so the default can change again
+        // on new evidence without changing the CLI.
+        InflateMode::Auto => Strategy::Stream,
     }
 }
 
@@ -217,32 +209,13 @@ mod tests {
         assert_eq!(isize_hint(&p), None);
     }
 
+    /// Measured 2026-10-23 on x86-64, arm64 and the neh-app container: with
+    /// zlib-ng streaming, the buffered path never used less total CPU, and on
+    /// archives inflating to 42 MB it used 8-59% more. So `auto` streams even
+    /// when the archive would fit the budget.
     #[test]
-    fn auto_uses_buffer_when_the_hint_fits_the_budget() {
+    fn auto_streams_even_when_the_hint_fits_the_budget() {
         let (_d, p) = tmp(&gz(&vec![b'a'; 5000]));
-        assert!(matches!(
-            choose(crate::cli::InflateMode::Auto, &p, 64 * 1024),
-            Strategy::Buffer { .. }
-        ));
-    }
-
-    #[test]
-    fn auto_streams_when_the_hint_exceeds_the_budget() {
-        let (_d, p) = tmp(&gz(&vec![b'a'; 200_000]));
-        assert!(matches!(
-            choose(crate::cli::InflateMode::Auto, &p, 1024),
-            Strategy::Stream
-        ));
-    }
-
-    #[test]
-    fn auto_streams_when_the_hint_is_implausible() {
-        // ISIZE far smaller than the compressed size means the trailer is not
-        // describing this whole stream (wrapped, concatenated, or truncated).
-        let mut bytes = gz(&vec![b'a'; 100_000]);
-        let n = bytes.len();
-        bytes[n - 4..].copy_from_slice(&1u32.to_le_bytes());
-        let (_d, p) = tmp(&bytes);
         assert!(matches!(
             choose(crate::cli::InflateMode::Auto, &p, 64 * 1024 * 1024),
             Strategy::Stream
