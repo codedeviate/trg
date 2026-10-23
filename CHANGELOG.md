@@ -9,11 +9,14 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-23
+
 ### Added
 
 - GitHub releases carry prebuilt Linux binaries (x86_64 and aarch64, glibc
   2.17 or newer) with SHA-256 checksums, built and smoke-tested by
   `.github/workflows/release.yml` on each tag. 0.5.0 was backfilled.
+- x86-64 benchmark figures in the README: 9.4× less CPU than `zgrep -a`.
 - Exclusion globs, as in ripgrep: a leading `!` excludes, for both `-g` and
   `--archive-glob` (`-g '!*.error.log'`, `--archive-glob '!2026-09-*'`). When
   several globs match, the last one given wins. With at least one non-`!`
@@ -178,7 +181,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/codedeviate/trg/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/codedeviate/trg/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/codedeviate/trg/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/codedeviate/trg/compare/v0.3.0...v0.3.1
