@@ -9,6 +9,17 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- Published to crates.io as `targrep` (`cargo install targrep`); the binary is
+  still `trg`. The Cargo package was renamed from `trg` to match; the library
+  and binary names are unchanged.
+
+### Documentation
+
+- README: install via Homebrew (`codedeviate/cli/targrep`) or crates.io.
+- CONTRIBUTING: crates.io and Homebrew steps added to the release checklist.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

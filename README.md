@@ -49,8 +49,21 @@ aarch64):
 
 ## Install
 
-Requires Rust (edition 2024) and, for the default zlib-ng backend, `cmake` and
-a C compiler.
+With Homebrew (builds from source):
+
+```sh
+brew install codedeviate/cli/targrep
+```
+
+From [crates.io](https://crates.io/crates/targrep) — the crate is `targrep`,
+the binary it installs is `trg`:
+
+```sh
+cargo install targrep
+```
+
+Either way this needs Rust (edition 2024) and, for the default zlib-ng backend,
+`cmake` and a C compiler. From a checkout:
 
 ```sh
 cargo install --path .

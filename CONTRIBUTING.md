@@ -51,6 +51,16 @@ To release:
    bottom of the file.
 3. Set `version` in `Cargo.toml` (and let `Cargo.lock` follow).
 4. Commit as `chore(release): X.Y.Z` and tag `vX.Y.Z`.
+5. Push `master` and the tag, and create the GitHub release `targrep X.Y.Z`
+   with that version's changelog section as its notes.
+6. Publish to crates.io from the tagged commit: `cargo publish --dry-run`,
+   then `cargo publish`. The crate is named `targrep`; the binary is `trg`.
+   A published version can never be replaced, only yanked, so the dry run is
+   not optional.
+7. Bump the Homebrew formula in `../homebrew-cli`:
+   `./scripts/bump.sh targrep X.Y.Z`, then `brew install --build-from-source`,
+   `brew test` and `brew audit --strict` before pushing (see that repo's
+   `CLAUDE.md`).
 
 ## Scope
 

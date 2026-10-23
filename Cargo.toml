@@ -1,8 +1,18 @@
 [package]
-name = "trg"
+# Published as `targrep` (the project's name); the library and binary are
+# still `trg`, so `cargo install targrep` puts `trg` on the PATH.
+name = "targrep"
 version = "0.3.0"
 edition = "2024"
 license = "MIT"
+authors = ["Thomas Björk"]
+description = "Search inside compressed log archives (.tgz, .tar.zst, .tar.xz) with ripgrep's flags and per-member line numbers"
+repository = "https://github.com/codedeviate/trg"
+homepage = "https://github.com/codedeviate/trg"
+readme = "README.md"
+keywords = ["grep", "tar", "archive", "logs", "search"]
+categories = ["command-line-utilities", "text-processing", "compression"]
+exclude = ["bench/", "scripts/"]
 
 [lib]
 name = "trg"
