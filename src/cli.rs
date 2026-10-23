@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::{print, search};
 
 pub const HELP: &str = "\
-trg — search inside compressed log archives (.tgz, .tar.zst)
+trg — search inside compressed log archives (.tgz, .tar.zst, .tar.xz)
 
 USAGE:
     trg [OPTIONS] PATTERN PATH...
@@ -82,10 +82,10 @@ NOTES (documented, and surprising the first time):
     On a broken pipe (`| head`) trg stops early and exits 0, leaving later
       archives unread.
     Compression is detected from content, never from the filename, so there is
-      no -z flag. gzip and zstd are recognised, each unwrapped one level, so a
-      logrotate'd access.log.1.gz or .zst inside the archive is searched as
-      text rather than skipped as binary.
-    --inflate=buffer is gzip-only; a zstd archive always streams, which costs a
+      no -z flag. gzip, zstd and xz are recognised, each unwrapped one level, so a
+      logrotate'd access.log.1.gz, .zst or .xz inside the archive is searched
+      as text rather than skipped as binary.
+    --inflate=buffer is gzip-only; a zstd or xz archive always streams, which costs a
       slower path and never a wrong answer.
 ";
 

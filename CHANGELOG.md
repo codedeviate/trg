@@ -13,6 +13,16 @@ How versions are chosen before 1.0.0 is described in
 
 - `scripts/build-linux.sh`: cross-builds a Linux release binary (x86_64 by
   default, or aarch64) into `dist/`, for copying onto servers by hand.
+- xz support: `.tar.xz` archives search exactly like `.tgz` and `.tar.zst`,
+  detected from content (magic `FD 37 7A 58 5A 00`), with no new flag.
+- xz members inside an archive are unwrapped one level, so a logrotate'd
+  `access.log.1.xz` is searched as text. Concatenated xz streams are decoded
+  whole, as `xz -d` does.
+- xz archives keep the bounded-memory streaming path and the page-cache
+  dropping guarantee. `--inflate=buffer` falls back to streaming for them, as
+  for zstd.
+- liblzma is linked statically (built from source by `liblzma-sys`), so the
+  Linux release binary still needs nothing but glibc.
 
 ## [0.2.1] - 2026-10-05
 

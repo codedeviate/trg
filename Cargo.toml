@@ -24,6 +24,7 @@ ignore = "0.4.33"
 lexopt = "0.3.2"
 libc = "0.2.189"
 libdeflater = "1.26.0"
+liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 num_cpus = "1.17.0"
 tar = "0.4.46"
 termcolor = "1.4.1"
@@ -32,6 +33,7 @@ zstd = "0.13.3"
 [dev-dependencies]
 assert_cmd = "2.2.2"
 libc = "0.2.189"
+liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 tar = "0.4.46"
 tempfile = "3.27.0"
 zstd = "0.13.3"

@@ -1,7 +1,7 @@
 # targrep
 
-`targrep` — run as `trg` — searches inside compressed log archives (`.tgz`
-and `.tar.zst`) with ripgrep's flags, per-member line numbers, and without
+`targrep` — run as `trg` — searches inside compressed log archives (`.tgz`,
+`.tar.zst` and `.tar.xz`) with ripgrep's flags, per-member line numbers, and without
 trashing the page cache of the server you are searching on.
 
 ```console
@@ -36,9 +36,9 @@ aarch64):
 ## Features
 
 - `archive:member/path:line:` output, line numbers correct per member.
-- Compression detected from content, not the filename: gzip and zstd, each
-  unwrapped one level, so a logrotate'd `access.log.1.gz` or `.zst` *inside*
-  an archive is searched as text.
+- Compression detected from content, not the filename: gzip, zstd and xz,
+  each unwrapped one level, so a logrotate'd `access.log.1.gz`, `.zst` or `.xz`
+  *inside* an archive is searched as text.
 - ripgrep's flag names wherever the job is the same (`-i`, `-w`, `-F`, `-v`,
   `-C`, `-o`, `-c`, `-l`, `-q`, `--json`, …). `-g` filters *members* inside
   archives.

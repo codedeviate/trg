@@ -64,6 +64,39 @@ pub fn tar_zst_truncated(name: &str, members: &[(&str, &[u8])], keep: f64) -> Fi
     write(dir, name, &full[..n.max(8)])
 }
 
+pub fn xz_bytes(raw: &[u8]) -> Vec<u8> {
+    let mut e = liblzma::write::XzEncoder::new(Vec::new(), 6);
+    e.write_all(raw).unwrap();
+    e.finish().unwrap()
+}
+
+/// A `.tar.xz`: same shape as `tgz`, different compression wrapper.
+pub fn tar_xz(name: &str, members: &[(&str, &[u8])]) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &xz_bytes(&build_tar(members)))
+}
+
+/// A `.tar.xz` whose member is itself xz-compressed — what logrotate
+/// produces with `compresscmd xz`.
+pub fn tar_xz_nested_xz(name: &str, inner: &str, body: &[u8]) -> Fixture {
+    let inner_xz = xz_bytes(body);
+    tar_xz(name, &[(inner, inner_xz.as_slice())])
+}
+
+/// A `.tgz` whose member is xz-compressed — mixed nesting.
+pub fn tgz_nested_xz(name: &str, inner: &str, body: &[u8]) -> Fixture {
+    let inner_xz = xz_bytes(body);
+    tgz(name, &[(inner, inner_xz.as_slice())])
+}
+
+/// A `.tar.xz` cut off mid-stream.
+pub fn tar_xz_truncated(name: &str, members: &[(&str, &[u8])], keep: f64) -> Fixture {
+    let full = xz_bytes(&build_tar(members));
+    let n = ((full.len() as f64) * keep) as usize;
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &full[..n.max(8)])
+}
+
 fn gzip(raw: &[u8]) -> Vec<u8> {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     e.write_all(raw).unwrap();

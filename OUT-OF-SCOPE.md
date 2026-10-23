@@ -29,7 +29,7 @@ When an item moves into the codebase, delete it here and record it in
 
 ### Not built, for now
 
-- **bzip2, xz, lz4.** None exist on the target servers and none are expected.
+- **bzip2, lz4.** None exist on the target servers and none are expected.
   Each would be mechanically simple (a sniff entry and a decoder) — the reason
   to add one is a real archive in that format.
 - **`.zip` archives.** Not "another decoder": zip's central directory makes

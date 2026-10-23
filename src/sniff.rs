@@ -7,6 +7,7 @@ pub const SNIFF_LEN: usize = 512;
 pub enum Format {
     Gzip,
     Zstd,
+    Xz,
     Tar,
     Plain,
 }
@@ -20,6 +21,9 @@ pub fn sniff(head: &[u8]) -> Format {
     }
     if head.len() >= 4 && head[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
         return Format::Zstd;
+    }
+    if head.len() >= 6 && head[..6] == [0xFD, b'7', b'z', b'X', b'Z', 0x00] {
+        return Format::Xz;
     }
     if head.len() >= 262 && &head[257..262] == b"ustar" {
         return Format::Tar;
@@ -67,6 +71,24 @@ mod tests {
         b[..4].copy_from_slice(&[0x28, 0xB5, 0x2F, 0xFD]);
         b[257..262].copy_from_slice(b"ustar");
         assert_eq!(sniff(&b), Format::Zstd);
+    }
+
+    #[test]
+    fn detects_xz_from_magic() {
+        assert_eq!(sniff(&[0xFD, b'7', b'z', b'X', b'Z', 0x00, 0x00]), Format::Xz);
+    }
+
+    #[test]
+    fn xz_magic_needs_all_six_bytes() {
+        assert_eq!(sniff(&[0xFD, b'7', b'z', b'X', b'Z']), Format::Plain);
+    }
+
+    #[test]
+    fn xz_wins_over_a_coincidental_ustar() {
+        let mut b = vec![0u8; 512];
+        b[..6].copy_from_slice(&[0xFD, b'7', b'z', b'X', b'Z', 0x00]);
+        b[257..262].copy_from_slice(b"ustar");
+        assert_eq!(sniff(&b), Format::Xz);
     }
 
     #[test]
