@@ -1,0 +1,125 @@
+name: Release binaries
+
+# Creates the GitHub release for a tag (titled `targrep X.Y.Z`, with that
+# version's CHANGELOG.md section as its notes) unless it already exists, then
+# attaches Linux binaries to it.
+#
+# A tag push builds for that tag. `workflow_dispatch` rebuilds an existing tag,
+# for backfilling a release or replacing its binaries.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, e.g. v0.5.0"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    name: release exists
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      # One job, before the builds: two builds racing to create it would make
+      # one of them fail.
+      - name: Create the release unless it exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"; exit 0
+          fi
+          ver=${TAG#v}
+          awk -v v="$ver" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for $ver"; exit 1; }
+          gh release create "$TAG" --verify-tag --title "targrep $ver" --notes-file notes.md
+
+  linux:
+    name: linux (${{ matrix.arch }})
+    needs: release
+    # Native runners for both architectures, so each binary is smoke-tested on
+    # the hardware it was built for rather than shipped untested.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    # The default workflow token is read-only; uploading assets needs this.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      # zig is the linker that lets cargo-zigbuild target glibc 2.17.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Tag must match the Cargo.toml version
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          [ "${TAG#v}" = "$ver" ] || { echo "tag $TAG != Cargo.toml version $ver"; exit 1; }
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: scripts/build-linux.sh ${{ matrix.arch }}
+
+      # The README promises CentOS 7 onwards. A dependency that starts calling
+      # a newer glibc symbol breaks that silently, so check the symbols.
+      - name: Needs nothing newer than glibc 2.17
+        run: |
+          bin=dist/trg-$VERSION-${{ matrix.arch }}-linux
+          max=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n1)
+          echo "highest glibc symbol: $max"
+          [ "$(printf '%s\n' "$max" GLIBC_2.17 | sort -V | tail -n1)" = GLIBC_2.17 ] \
+            || { echo "binary needs $max, newer than GLIBC_2.17"; exit 1; }
+
+      - name: Smoke test
+        run: |
+          bin=dist/trg-$VERSION-${{ matrix.arch }}-linux
+          "$bin" --version | grep -qx "trg $VERSION"
+          mkdir -p smoke/logs
+          printf 'GET /x NEEDLE\n' > smoke/logs/a.log
+          tar -czf smoke/a.tgz -C smoke logs
+          tar -cJf smoke/a.tar.xz -C smoke logs
+          [ "$("$bin" -c NEEDLE smoke/a.tgz smoke/a.tar.xz | wc -l)" -eq 2 ]
+
+      - name: Package
+        run: |
+          name=trg-$VERSION-${{ matrix.arch }}-linux
+          mkdir -p "pkg/$name"
+          cp "dist/$name" "pkg/$name/trg"
+          cp LICENSE README.md CHANGELOG.md "pkg/$name/"
+          tar -czf "$name.tar.gz" -C pkg "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name=trg-$VERSION-${{ matrix.arch }}-linux
+          gh release upload "$TAG" "$name.tar.gz" "$name.tar.gz.sha256" --clobber

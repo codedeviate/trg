@@ -83,8 +83,16 @@ cargo install --path . --no-default-features
 
 ### A Linux binary to copy onto a server
 
-From macOS or any other host, with `cargo-zigbuild`, `zig` and `cmake`
-installed:
+Every [GitHub release](https://github.com/codedeviate/trg/releases) has
+prebuilt binaries for x86_64 and aarch64, each with a `.sha256`:
+
+```sh
+curl -LO https://github.com/codedeviate/trg/releases/download/v0.5.0/trg-0.5.0-x86_64-linux.tar.gz
+tar -xzf trg-0.5.0-x86_64-linux.tar.gz   # trg-0.5.0-x86_64-linux/trg
+```
+
+To build one yourself, from macOS or any other host, with `cargo-zigbuild`,
+`zig` and `cmake` installed:
 
 ```sh
 scripts/build-linux.sh            # dist/trg-<version>-x86_64-linux

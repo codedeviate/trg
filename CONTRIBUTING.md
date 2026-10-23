@@ -51,8 +51,12 @@ To release:
    bottom of the file.
 3. Set `version` in `Cargo.toml` (and let `Cargo.lock` follow).
 4. Commit as `chore(release): X.Y.Z` and tag `vX.Y.Z`.
-5. Push `master` and the tag, and create the GitHub release `targrep X.Y.Z`
-   with that version's changelog section as its notes.
+5. Push `master` and the tag. The tag push runs
+   `.github/workflows/release.yml`, which creates the GitHub release
+   `targrep X.Y.Z` with that version's changelog section as its notes, then
+   builds, smoke-tests and attaches the x86_64 and aarch64 Linux binaries.
+   Wait for it to go green. To rebuild an existing tag's binaries, run the
+   workflow by hand: `gh workflow run release.yml -f tag=vX.Y.Z`.
 6. Publish to crates.io from the tagged commit: `cargo publish --dry-run`,
    then `cargo publish`. The crate is named `targrep`; the binary is `trg`.
    A published version can never be replaced, only yanked, so the dry run is

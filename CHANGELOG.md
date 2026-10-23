@@ -9,6 +9,12 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- GitHub releases carry prebuilt Linux binaries (x86_64 and aarch64, glibc
+  2.17 or newer) with SHA-256 checksums, built and smoke-tested by
+  `.github/workflows/release.yml` on each tag. 0.5.0 was backfilled.
+
 ## [0.5.0] - 2026-10-23
 
 ### Added
