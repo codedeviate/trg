@@ -42,6 +42,18 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  msrv:
+    # Must match `rust-version` in Cargo.toml. A build with the committed
+    # Cargo.lock, so it fails when a dependency update needs a newer compiler.
+    name: check (Rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --locked --all-targets
+
   no-default-features:
     # The README's fallback for hosts without cmake: pure-Rust miniz_oxide
     # instead of zlib-ng. Nothing else builds it, so it would rot unnoticed.

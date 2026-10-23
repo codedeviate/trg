@@ -4,6 +4,9 @@
 name = "targrep"
 version = "0.5.0"
 edition = "2024"
+# globset and ignore need 1.88. CI checks it (the msrv job), so a dependency
+# bump that raises it fails there rather than in someone's `cargo install`.
+rust-version = "1.88"
 license = "MIT"
 authors = ["Thomas Björk"]
 description = "Search inside compressed log archives (.tgz, .tar.zst, .tar.xz) with ripgrep's flags and per-member line numbers"

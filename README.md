@@ -68,7 +68,7 @@ the binary it installs is `trg`:
 cargo install targrep
 ```
 
-Either way this needs Rust (edition 2024) and, for the default zlib-ng backend,
+Either way this needs Rust 1.88 or newer and, for the default zlib-ng backend,
 `cmake` and a C compiler. From a checkout:
 
 ```sh

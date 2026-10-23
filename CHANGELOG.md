@@ -24,6 +24,9 @@ How versions are chosen before 1.0.0 is described in
 
 - A glob starting with `!` used to be matched literally, so it matched
   nothing; it now excludes.
+- `rust-version = "1.88"` is declared (the floor set by `globset` and
+  `ignore`), so an older toolchain gets a clear error instead of a
+  dependency failure. CI checks it.
 
 ## [0.5.0] - 2026-10-23
 
