@@ -152,8 +152,7 @@ pub fn tgz_with_hardlink(name: &str) -> Fixture {
 /// A member whose path exceeds tar's 100-byte name field, forcing GNU
 /// `././@LongLink` or pax extension records.
 pub fn tgz_with_long_name(name: &str, depth: usize) -> Fixture {
-    let long = std::iter::repeat("averylongdirectorycomponent")
-        .take(depth)
+    let long = std::iter::repeat_n("averylongdirectorycomponent", depth)
         .collect::<Vec<_>>()
         .join("/");
     let member = format!("{long}/access.log");

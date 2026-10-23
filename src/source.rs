@@ -97,7 +97,7 @@ fn walk(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
     {
         match res {
             Ok(e) => {
-                if e.file_type().map_or(false, |t| t.is_file()) {
+                if e.file_type().is_some_and(|t| t.is_file()) {
                     out.push(e.into_path());
                 }
             }

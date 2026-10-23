@@ -219,7 +219,10 @@ pub fn open_decoded_with(
 /// `Box<dyn Read + Send>` for the worker threads of Task 10), while
 /// `for_each_member` can also call this on a `&mut tar::Entry<'_, R>`, which is
 /// not `Send`.
-fn peek<R: Read>(mut rdr: R) -> io::Result<(Vec<u8>, io::Chain<io::Cursor<Vec<u8>>, R>)> {
+/// The sniffed head, and a reader that replays it before the rest.
+type Peeked<R> = (Vec<u8>, io::Chain<io::Cursor<Vec<u8>>, R>);
+
+fn peek<R: Read>(mut rdr: R) -> io::Result<Peeked<R>> {
     let mut head = vec![0u8; SNIFF_LEN];
     let mut filled = 0;
     while filled < head.len() {
@@ -298,10 +301,8 @@ where
 
         out.members_seen += 1;
 
-        if let Some(set) = globs {
-            if !set.is_match(&name) {
-                continue;
-            }
+        if globs.is_some_and(|set| !set.is_match(&name)) {
+            continue;
         }
 
         // Exactly one level of nesting: logrotate puts access.log.1.gz inside

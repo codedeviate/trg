@@ -45,6 +45,6 @@ fn hardlink_fixture_has_a_link_entry_with_no_content() {
         let entry = e.unwrap();
         kinds.push(entry.header().entry_type());
     }
-    assert!(kinds.iter().any(|k| *k == tar::EntryType::Link),
+    assert!(kinds.contains(&tar::EntryType::Link),
             "expected a hardlink entry, got {kinds:?}");
 }
