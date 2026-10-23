@@ -56,9 +56,6 @@ When an item moves into the codebase, delete it here and record it in
 
 ### Engineering
 
-- **Deterministic ordering tests.** Four sleep-based tests in `tests/ordering.rs`
-  use 150–500 ms margins and will flake on a loaded CI box. Redesign: block the
-  straggler on a `Condvar` that `emit` signals, then `wait_timeout`.
 - **Regression test for sched deadlock #4** (teardown guard armed after the
   spawn loop). Needs a fault-injection hook around `scope.spawn`.
 - **x86-64 benchmarks.** Every figure so far is aarch64; zlib-ng's NEON and AVX2

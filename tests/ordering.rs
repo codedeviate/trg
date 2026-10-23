@@ -104,8 +104,8 @@ fn a_match_in_one_archive_never_interleaves_with_another() {
 // held-buffer cap is enforced.
 // ---------------------------------------------------------------------------
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use trg::sched::{Done, Job};
@@ -118,10 +118,42 @@ fn buf() -> termcolor::Buffer {
     termcolor::Buffer::no_color()
 }
 
+/// How long a test waits for an event that a correct scheduler always
+/// produces. Never reached when the scheduler works, however loaded the
+/// machine: it exists so a broken scheduler fails the test instead of hanging
+/// it. That is the difference from the sleeps these tests used to rely on,
+/// which encoded a guess about how fast the machine was.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// A counter threads can wait on. The ordering tests use it to force the
+/// interleaving they need instead of sleeping and hoping for it.
+#[derive(Default)]
+struct Latch {
+    count: Mutex<usize>,
+    cv: Condvar,
+}
+
+impl Latch {
+    fn add(&self) {
+        *self.count.lock().unwrap() += 1;
+        self.cv.notify_all();
+    }
+
+    /// Wait until at least `n` `add`s have happened. `false` means `PATIENCE`
+    /// ran out, which a correct scheduler never lets happen.
+    fn wait_for(&self, n: usize) -> bool {
+        let g = self.count.lock().unwrap();
+        let (_g, t) = self.cv.wait_timeout_while(g, PATIENCE, |c| *c < n).unwrap();
+        !t.timed_out()
+    }
+}
+
 #[test]
 fn sched_runs_archives_concurrently() {
-    let in_flight = AtomicUsize::new(0);
-    let peak = AtomicUsize::new(0);
+    // Each job waits for a second job to be in flight with it. A sequential
+    // pool never has two, so its first job runs out of patience.
+    let started = Latch::default();
+    let overlapped = Mutex::new(Vec::new());
 
     trg::sched::run(
         jobs(4),
@@ -129,10 +161,8 @@ fn sched_runs_archives_concurrently() {
         buf,
         || (),
         |_job, _c: &mut (), _b| {
-            let now = in_flight.fetch_add(1, AtomicOrdering::SeqCst) + 1;
-            peak.fetch_max(now, AtomicOrdering::SeqCst);
-            std::thread::sleep(Duration::from_millis(150));
-            in_flight.fetch_sub(1, AtomicOrdering::SeqCst);
+            started.add();
+            overlapped.lock().unwrap().push(started.wait_for(2));
             trg::archive::Outcome::default()
         },
         |_done: &Done| Ok(()),
@@ -140,13 +170,18 @@ fn sched_runs_archives_concurrently() {
     .unwrap();
 
     assert!(
-        peak.load(AtomicOrdering::SeqCst) >= 2,
+        overlapped.into_inner().unwrap().iter().all(|&o| o),
         "jobs never overlapped; the pool is still sequential"
     );
 }
 
 #[test]
 fn sched_emits_in_index_order_when_sorted() {
+    // Force completion order 3, 2, 1, 0: job i < 3 finishes only after job
+    // i + 1 has. Workers pull jobs in index order, so jobs 0..4 hold all four
+    // workers and job 3 is never starved. Jobs 4..8 run freely.
+    let finished: Vec<Latch> = (0..8).map(|_| Latch::default()).collect();
+    let completed = Mutex::new(Vec::new());
     let seen = Mutex::new(Vec::new());
 
     trg::sched::run(
@@ -155,8 +190,11 @@ fn sched_emits_in_index_order_when_sorted() {
         buf,
         || (),
         |job, _c: &mut (), _b| {
-            // later jobs finish first, so completion order != argument order
-            std::thread::sleep(Duration::from_millis(80 - (job.index as u64 * 8)));
+            if job.index < 3 {
+                assert!(finished[job.index + 1].wait_for(1), "job {} never finished", job.index + 1);
+            }
+            completed.lock().unwrap().push(job.index);
+            finished[job.index].add();
             trg::archive::Outcome::default()
         },
         |done: &Done| {
@@ -166,6 +204,11 @@ fn sched_emits_in_index_order_when_sorted() {
     )
     .unwrap();
 
+    // Not vacuous: completion really was out of order. Only the relative
+    // order of 0..4 is forced; job 3's worker moves straight on to 4..8.
+    let first_four: Vec<usize> =
+        completed.into_inner().unwrap().into_iter().filter(|&i| i < 4).collect();
+    assert_eq!(first_four, [3, 2, 1, 0]);
     assert_eq!(seen.into_inner().unwrap(), (0..8).collect::<Vec<_>>());
 }
 
@@ -173,12 +216,10 @@ fn sched_emits_in_index_order_when_sorted() {
 fn sched_emits_ready_results_without_waiting_for_stragglers() {
     // The whole point of bounded memory: a finished job whose predecessors are
     // all emitted must be written out and freed at once, not held until every
-    // worker has joined.
-    let stragglers_done = Arc::new(AtomicBool::new(false));
-    let leader_was_early = Arc::new(AtomicBool::new(false));
-
-    let sd = Arc::clone(&stragglers_done);
-    let le = Arc::clone(&leader_was_early);
+    // worker has joined. The stragglers refuse to finish until job 0 has been
+    // emitted, so a scheduler that holds it makes them run out of patience.
+    let leader_emitted = Latch::default();
+    let released = Mutex::new(Vec::new());
 
     trg::sched::run(
         jobs(4),
@@ -187,14 +228,13 @@ fn sched_emits_ready_results_without_waiting_for_stragglers() {
         || (),
         |job, _c: &mut (), _b| {
             if job.index > 0 {
-                std::thread::sleep(Duration::from_millis(500));
-                sd.store(true, AtomicOrdering::SeqCst);
+                released.lock().unwrap().push(leader_emitted.wait_for(1));
             }
             trg::archive::Outcome::default()
         },
         |done: &Done| {
-            if done.index == 0 && !stragglers_done.load(AtomicOrdering::SeqCst) {
-                le.store(true, AtomicOrdering::SeqCst);
+            if done.index == 0 {
+                leader_emitted.add();
             }
             Ok(())
         },
@@ -202,13 +242,18 @@ fn sched_emits_ready_results_without_waiting_for_stragglers() {
     .unwrap();
 
     assert!(
-        leader_was_early.load(AtomicOrdering::SeqCst),
+        released.into_inner().unwrap().iter().all(|&r| r),
         "job 0 was held until every worker joined; peak memory now grows with total match volume"
     );
 }
 
 #[test]
 fn sched_spills_out_of_order_rather_than_growing_unbounded() {
+    // Job 0 refuses to finish until a later job has been emitted. In order,
+    // nothing after 0 may be emitted before it, so only the spill cap can
+    // release job 0 — without the cap, it runs out of patience.
+    let later_emitted = Latch::default();
+    let released = Mutex::new(None);
     let seen = Mutex::new(Vec::new());
 
     trg::sched::run(
@@ -220,13 +265,16 @@ fn sched_spills_out_of_order_rather_than_growing_unbounded() {
         |job, _c: &mut (), b| {
             use std::io::Write;
             if job.index == 0 {
-                std::thread::sleep(Duration::from_millis(500));
+                *released.lock().unwrap() = Some(later_emitted.wait_for(1));
             }
             write!(b, "{}", "y".repeat(100)).unwrap();
             trg::archive::Outcome::default()
         },
         |done: &Done| {
             seen.lock().unwrap().push(done.index);
+            if done.index != 0 {
+                later_emitted.add();
+            }
             Ok(())
         },
     )
@@ -236,6 +284,7 @@ fn sched_spills_out_of_order_rather_than_growing_unbounded() {
     let mut sorted = order.clone();
     sorted.sort_unstable();
     assert_eq!(sorted, (0..4).collect::<Vec<_>>(), "every job must be emitted exactly once");
+    assert_eq!(*released.lock().unwrap(), Some(true), "the cap must force an out-of-order flush");
     assert_ne!(order.first(), Some(&0), "the cap must force an out-of-order flush");
 }
 
