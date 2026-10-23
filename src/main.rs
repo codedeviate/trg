@@ -1,5 +1,5 @@
 use termcolor::{BufferWriter, ColorChoice};
-use trg::{cli::ColorArg, print, search};
+use trg::{cli::ColorArg, escape, print, search};
 
 /// The exit-code contract, in one place.
 ///
@@ -37,7 +37,7 @@ fn main() {
     let code = match run() {
         Ok(status) => status.exit_code(),
         Err(e) => {
-            eprintln!("trg: {e:#}");
+            eprintln!("trg: {}", escape::for_stderr(&format!("{e:#}")));
             RunStatus { matched: false, partial: true }.exit_code()
         }
     };
@@ -69,6 +69,16 @@ fn run() -> anyhow::Result<RunStatus> {
         ColorArg::Auto => std::io::IsTerminal::is_terminal(&std::io::stdout()),
     };
     args.print.color = color;
+    // The same tty test as colour, but per stream: stderr is often a terminal
+    // while stdout is a file, and diagnostics carry member names too.
+    let escape_for = |tty: bool| match args.escape {
+        ColorArg::Always => true,
+        ColorArg::Never => false,
+        ColorArg::Auto => tty,
+    };
+    args.print.escape = escape_for(std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    escape::set_stderr(escape_for(std::io::IsTerminal::is_terminal(&std::io::stderr())));
+    let escape_stdout = args.print.escape;
     let bw = BufferWriter::stdout(if color { ColorChoice::Always } else { ColorChoice::Never });
 
     let mut matched = false;
@@ -77,7 +87,7 @@ fn run() -> anyhow::Result<RunStatus> {
     let (items, path_errors) = trg::source::resolve(&args.paths);
     let globs = trg::source::build_globs(&args.globs)?;
     for e in &path_errors {
-        eprintln!("trg: {e}");
+        eprintln!("trg: {}", escape::for_stderr(&e.to_string()));
         partial = true;
     }
 
@@ -113,7 +123,8 @@ fn run() -> anyhow::Result<RunStatus> {
             // opens the archive the same way, under the same inflate strategy
             // and the same cache policy.
             if args.list_members {
-                return search::list_members(&ctx, &job.path, strategy, buf);
+                let mut out = escape::Escaped::new(buf, escape_stdout);
+                return search::list_members(&ctx, &job.path, strategy, &mut out);
             }
             let mut printer = print::build(&args.print, buf);
             search::search_archive(&ctx, &job.path, searcher, &mut printer, strategy)
@@ -131,7 +142,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // the same thing twice in a row, but they leave `partial` alone:
             // nothing went unread, so the exit code is not theirs to change.
             for n in &done.outcome.notes {
-                eprintln!("trg: {n}");
+                eprintln!("trg: {}", escape::for_stderr(n));
             }
             // Report this archive's own errors even if stdout has gone away:
             // stderr is usually still attached, and it is where the diagnosis
@@ -142,7 +153,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // — an archive filtered down to nothing by `-g` was read in full and
             // is a clean 1.
             for e in &done.outcome.errors {
-                eprintln!("trg: {e}");
+                eprintln!("trg: {}", escape::for_stderr(e));
                 partial = true;
             }
             r

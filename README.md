@@ -46,6 +46,11 @@ aarch64):
   no page-cache footprint. `--turbo` lifts all of that when you need the answer
   now.
 - An exit code you can trust (below).
+- Safe to read on a terminal: log lines and member names are written by
+  whoever sent the request, so on a tty their control bytes are shown as text
+  (`\x1b[2J`) instead of being acted on — no retitled windows, cleared
+  screens, clipboard writes or hidden lines. trg's own colours still work.
+  Piped output stays byte-exact; `--escape always|never` overrides.
 
 ## Install
 

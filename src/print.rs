@@ -7,6 +7,8 @@ use grep_printer::{
 };
 use termcolor::Buffer;
 
+use crate::escape::Escaped;
+
 /// The mutually exclusive output modes.
 ///
 /// Mutually exclusive because each one is a different answer to "what is a
@@ -34,6 +36,8 @@ pub struct PrintOpts {
     /// Resolved by `main` from `--color` plus whether stdout is a tty; by the
     /// time it reaches here it is a decision, not a preference.
     pub color: bool,
+    /// Resolved the same way as `color`, from `--escape` and stdout's tty-ness.
+    pub escape: bool,
 }
 
 impl Default for PrintOpts {
@@ -43,6 +47,7 @@ impl Default for PrintOpts {
             column: false,
             mode: Mode::Standard,
             color: false,
+            escape: false,
         }
     }
 }
@@ -53,9 +58,9 @@ impl Default for PrintOpts {
 /// unrelated concrete types with different lifetimes, and boxing them would
 /// buy nothing: the match arms live in exactly one place, `search::search_member`.
 pub enum Printer<'a> {
-    Standard(Standard<&'a mut Buffer>),
-    Summary(Summary<&'a mut Buffer>),
-    Json(JSON<&'a mut Buffer>),
+    Standard(Standard<Escaped<&'a mut Buffer>>),
+    Summary(Summary<Escaped<&'a mut Buffer>>),
+    Json(JSON<Escaped<&'a mut Buffer>>),
 }
 
 pub fn build<'a>(o: &PrintOpts, buf: &'a mut Buffer) -> Printer<'a> {
@@ -65,6 +70,9 @@ pub fn build<'a>(o: &PrintOpts, buf: &'a mut Buffer) -> Printer<'a> {
     // place instead of implied by the buffer's construction.
     let specs =
         if o.color { ColorSpecs::default_with_color() } else { ColorSpecs::default() };
+    // Every printer, not just the standard one: `-l` and `-c` print member
+    // names, and member names come out of the archive.
+    let buf = Escaped::new(buf, o.escape);
 
     match o.mode {
         Mode::Standard => Printer::Standard(
@@ -84,7 +92,9 @@ pub fn build<'a>(o: &PrintOpts, buf: &'a mut Buffer) -> Printer<'a> {
         ),
         // The JSON schema carries the path, line number and offsets itself, so
         // none of the standard printer's layout options apply.
-        Mode::Json => Printer::Json(JSONBuilder::new().build(buf)),
+        //
+        // Its output is already JSON, so it gets JSON's escapes, not ours.
+        Mode::Json => Printer::Json(JSONBuilder::new().build(buf.into_json())),
         // `-c`, `-l` and `-q` are all "one aggregate result per member", which
         // is exactly what `Summary` is for. Writing the count line by hand
         // instead would mean re-deriving `exclude_zero`, the field separator

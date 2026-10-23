@@ -113,10 +113,8 @@ pub fn open_decoded_dropping(
             Err(e) => {
                 // Never fail the search because the fast path did not fit:
                 // fall back to streaming, which always works.
-                eprintln!(
-                    "trg: {}: buffered inflate fell back to streaming ({e})",
-                    path.display()
-                );
+                let msg = format!("{}: buffered inflate fell back to streaming ({e})", path.display());
+                eprintln!("trg: {}", crate::escape::for_stderr(&msg));
             }
         }
     }

@@ -42,6 +42,10 @@ OUTPUT (same meaning as ripgrep):
     -q, --quiet           print nothing; exit code only
         --json            JSON Lines output
         --color WHEN      auto | always | never (auto: only on a tty)
+        --escape WHEN     show control bytes from logs and member names as
+                          text (\\x1b) instead of sending them to the
+                          terminal: auto | always | never (auto: on a tty,
+                          per stream; piped output stays byte-exact)
                           If several output modes are given, the most
                           suppressive wins: -q, then -l, then -c, then --json.
 
@@ -113,6 +117,7 @@ pub struct Args {
     pub quiet: bool,
     pub json: bool,
     pub color: ColorArg,
+    pub escape: ColorArg,
     pub search: search::SearchOpts,
     pub print: print::PrintOpts,
 }
@@ -137,6 +142,7 @@ impl Default for Args {
             quiet: false,
             json: false,
             color: ColorArg::Auto,
+            escape: ColorArg::Auto,
             search: search::SearchOpts::default(),
             print: print::PrintOpts::default(),
         }
@@ -215,6 +221,14 @@ where
                     "always" => ColorArg::Always,
                     "never" => ColorArg::Never,
                     other => anyhow::bail!("--color expects auto|always|never, got '{other}'"),
+                }
+            }
+            Long("escape") => {
+                a.escape = match p.value()?.string()?.as_str() {
+                    "auto" => ColorArg::Auto,
+                    "always" => ColorArg::Always,
+                    "never" => ColorArg::Never,
+                    other => anyhow::bail!("--escape expects auto|always|never, got '{other}'"),
                 }
             }
 

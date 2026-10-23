@@ -9,6 +9,32 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Security
+
+- Control bytes from logs and member names are no longer sent raw to a
+  terminal. A log line is attacker-controlled (a request URL, a User-Agent),
+  and its escape sequences could retitle the window, clear the screen, write
+  the clipboard, hide earlier text behind a carriage return, or on vulnerable
+  terminals type text back into the shell. On a tty they are now shown as
+  text: `\x1b`, `\x07`, a lone CR as `\x0d`, UTF-8 C1 controls as `\u{9b}`.
+  Tab, newline and CRLF line endings are kept. trg's own colours are
+  unaffected.
+- `--json` output gets JSON's own escapes instead (`\u007f`, `\u009b`) for
+  the DEL and C1 bytes serde leaves raw, so it stays valid JSON either way.
+- Diagnostics on stderr are escaped the same way, decided separately by
+  whether stderr is a tty.
+
+### Added
+
+- `--escape WHEN` (`auto` | `always` | `never`, default `auto`): `auto`
+  escapes only on a tty, so piped and redirected output is byte-exact, as
+  before.
+
+### Changed
+
+- Output on a terminal can differ from `rg`'s for lines with control bytes.
+  Piped output is unchanged.
+
 ## [0.3.1] - 2026-10-23
 
 ### Changed
