@@ -43,9 +43,6 @@ When an item moves into the codebase, delete it here and record it in
 
 - **Adaptive `--load-limit`** — a feedback loop that adjusts concurrency during
   the run, instead of a one-off check at startup.
-- **zstd whole-buffer inflate** — zstd's `Frame_Content_Size` header is a more
-  trustworthy size hint than gzip's mod-2³² trailer. Low priority: zstd already
-  decompresses several times faster than gzip, so buffer mode gains least here.
 - **Intra-archive parallelism for zstd** — frame boundaries make it possible,
   unlike gzip. It reopens `src/sched.rs`, which has produced four deadlocks;
   treat it as a project, not a patch.
@@ -57,11 +54,3 @@ When an item moves into the codebase, delete it here and record it in
 
 - **Regression test for sched deadlock #4** (teardown guard armed after the
   spawn loop). Needs a fault-injection hook around `scope.spawn`.
-- **Retire `--inflate=buffer` entirely?** Since 0.6.1 `auto` streams: with
-  zlib-ng streaming, the buffered path never used less total CPU on any machine
-  measured (`bench/inflate_modes.py`, 2026-10-23), and on 42 MB archives used
-  8-59% more. It survives as an explicit opt-in. Removing it would drop
-  `--inflate`, `--inflate-budget` and the libdeflater dependency, which breaks
-  scripts passing those flags. (The first measurement, 1.8-2.7x slower, was
-  wrong: those archives were 1.4 MB over the 1 GiB budget, so every buffered
-  row measured a failed attempt plus a full stream.)

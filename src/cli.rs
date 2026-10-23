@@ -72,11 +72,6 @@ RESOURCES:
         --nice NUM        scheduling priority (default 10)
         --no-nice         do not lower priority
         --no-drop-cache   keep archive pages in the page cache
-        --inflate MODE    auto | stream | buffer (default auto, which streams).
-                          buffer decompresses each gzip archive whole into
-                          memory; measured, it costs more CPU than streaming
-        --inflate-budget SIZE
-                          memory ceiling for --inflate=buffer (default 64M)
         --load-limit N    clamp jobs if 1-min load average exceeds N
 
     -h, --help            this message
@@ -92,20 +87,17 @@ NOTES (documented, and surprising the first time):
     Two directories symlinking the same file search it once (identity dedup).
     An intact archive behind a corrupt gzip trailer is a 0; truncation is
       still caught and is a 2.
-    --turbo's ordered output is bounded by neither --inflate-budget nor the
-      spill cap; peak RSS grows with the match volume held in order.
+    --turbo's ordered output is not bounded by the spill cap; peak RSS grows
+      with the match volume held in order.
     On a broken pipe (`| head`) trg stops early and exits 0, leaving later
       archives unread.
     Compression is detected from content, never from the filename, so there is
       no -z flag. gzip, zstd and xz are recognised, each unwrapped one level, so a
       logrotate'd access.log.1.gz, .zst or .xz inside the archive is searched
       as text rather than skipped as binary.
-    --inflate=buffer is gzip-only; a zstd or xz archive always streams, which costs a
-      slower path and never a wrong answer.
+    --inflate and --inflate-budget are accepted and ignored since 0.7.0, with
+      a note on stderr: trg always streams.
 ";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InflateMode { Auto, Stream, Buffer }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorArg { Auto, Always, Never }
@@ -118,8 +110,9 @@ pub struct Args {
     pub jobs: usize,
     pub nice: Option<i32>,
     pub drop_cache: bool,
-    pub inflate: InflateMode,
-    pub inflate_budget: u64,
+    /// Flags still accepted for old scripts but no longer doing anything,
+    /// each named once for a note on stderr.
+    pub deprecated: Vec<&'static str>,
     pub load_limit: Option<f64>,
     pub archive_sep: char,
     pub sort: bool,
@@ -144,8 +137,7 @@ impl Default for Args {
             jobs: 1,
             nice: Some(10),
             drop_cache: true,
-            inflate: InflateMode::Auto,
-            inflate_budget: 64 * 1024 * 1024,
+            deprecated: Vec::new(),
             load_limit: None,
             archive_sep: ':',
             sort: true,
@@ -174,6 +166,12 @@ fn parse_size(s: &str) -> anyhow::Result<u64> {
     let n: u64 = num.parse()?;
     n.checked_mul(mult)
         .ok_or_else(|| anyhow::anyhow!("--inflate-budget value too large: {s}"))
+}
+
+fn deprecate(a: &mut Args, flag: &'static str) {
+    if !a.deprecated.contains(&flag) {
+        a.deprecated.push(flag);
+    }
 }
 
 pub fn parse() -> anyhow::Result<Args> {
@@ -275,15 +273,21 @@ where
                 explicit_nice = true;
             }
             Long("no-drop-cache") => a.drop_cache = false,
+            // Removed in 0.7.0 with the whole-buffer path, which never beat
+            // zlib-ng streaming on total CPU. Still parsed and validated, so an
+            // old script keeps working and a typo is still a 2; the value is
+            // then dropped.
             Long("inflate") => {
-                a.inflate = match p.value()?.string()?.as_str() {
-                    "auto" => InflateMode::Auto,
-                    "stream" => InflateMode::Stream,
-                    "buffer" => InflateMode::Buffer,
+                match p.value()?.string()?.as_str() {
+                    "auto" | "stream" | "buffer" => {}
                     other => anyhow::bail!("--inflate expects auto|stream|buffer, got '{other}'"),
                 }
+                deprecate(&mut a, "--inflate");
             }
-            Long("inflate-budget") => a.inflate_budget = parse_size(&p.value()?.string()?)?,
+            Long("inflate-budget") => {
+                parse_size(&p.value()?.string()?)?;
+                deprecate(&mut a, "--inflate-budget");
+            }
             Long("load-limit") => a.load_limit = Some(p.value()?.parse()?),
 
             Short('h') | Long("help") => {
@@ -377,8 +381,7 @@ mod tests {
         assert_eq!(a.jobs, 1);
         assert_eq!(a.nice, Some(10));
         assert!(a.drop_cache);
-        assert!(matches!(a.inflate, InflateMode::Auto));
-        assert_eq!(a.inflate_budget, 64 * 1024 * 1024);
+        assert!(a.deprecated.is_empty());
         assert_eq!(a.archive_sep, ':');
         assert!(a.sort);
         assert_eq!(a.search.heap_limit, 16 * 1024 * 1024);
@@ -435,10 +438,11 @@ mod tests {
 
     #[test]
     fn size_suffixes_parse() {
-        assert_eq!(p(&["--inflate-budget", "512K", "p", "f"]).inflate_budget, 512 * 1024);
-        assert_eq!(p(&["--inflate-budget", "2M", "p", "f"]).inflate_budget, 2 * 1024 * 1024);
-        assert_eq!(p(&["--inflate-budget", "1G", "p", "f"]).inflate_budget, 1024 * 1024 * 1024);
-        assert_eq!(p(&["--inflate-budget", "1024", "p", "f"]).inflate_budget, 1024);
+        assert_eq!(parse_size("512K").unwrap(), 512 * 1024);
+        assert_eq!(parse_size("2M").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_size("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size("1024").unwrap(), 1024);
+        assert_eq!(p(&["--inflate-budget", "1G", "p", "f"]).deprecated, ["--inflate-budget"]);
     }
 
     #[test]
@@ -591,15 +595,13 @@ mod tests {
 
     #[test]
     fn inflate_budget_accepts_u64_max_with_no_suffix() {
-        let a = p(&["--inflate-budget", &u64::MAX.to_string(), "p", "f"]);
-        assert_eq!(a.inflate_budget, u64::MAX);
+        assert_eq!(parse_size(&u64::MAX.to_string()).unwrap(), u64::MAX);
     }
 
     #[test]
     fn inflate_budget_accepts_a_large_value_with_a_suffix_just_under_the_boundary() {
         // u64::MAX / 1024^3, so the multiply by G does not overflow.
         let n = u64::MAX / (1024 * 1024 * 1024);
-        let a = p(&["--inflate-budget", &format!("{n}G"), "p", "f"]);
-        assert_eq!(a.inflate_budget, n * 1024 * 1024 * 1024);
+        assert_eq!(parse_size(&format!("{n}G")).unwrap(), n * 1024 * 1024 * 1024);
     }
 }

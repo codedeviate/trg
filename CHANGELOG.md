@@ -9,6 +9,16 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Removed
+
+- The whole-buffer inflate path (libdeflate) and the dependency on it. Since
+  0.6.1 it was only used when asked for, and it never used less total CPU than
+  zlib-ng streaming on any machine measured. trg always streams.
+- `--inflate` and `--inflate-budget` no longer do anything. They are still
+  accepted, and their values still checked (a typo is still exit 2), so
+  scripts that pass them keep working; each prints a deprecation note on
+  stderr. A later release will remove them.
+
 ### Changed
 
 - `-g` globs without a `/` also match the member's file name, as in ripgrep

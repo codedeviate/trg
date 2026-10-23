@@ -1,7 +1,6 @@
 pub mod archive;
 pub mod cli;
 pub mod escape;
-pub mod inflate;
 pub mod print;
 pub mod resource;
 pub mod sched;

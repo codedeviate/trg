@@ -46,6 +46,9 @@ fn main() {
 
 fn run() -> anyhow::Result<RunStatus> {
     let mut args = trg::cli::parse()?;
+    for flag in &args.deprecated {
+        eprintln!("trg: {flag} is deprecated and has no effect: trg always streams since 0.7.0");
+    }
 
     // Stay out of the way before doing any work: a nice'd, idle-I/O process
     // uses spare capacity and is preempted the moment Apache wants the core.
@@ -117,18 +120,16 @@ fn run() -> anyhow::Result<RunStatus> {
         // archive count.
         || search::build_searcher(&args.search),
         |job, searcher, buf| {
-            let strategy = trg::inflate::choose(args.inflate, &job.path, args.inflate_budget);
             // `-T` is a different question, not a different printer: it never
             // reads a member's *content*, so it takes its own path rather than
             // threading a "do not search" flag through the search. It still
-            // opens the archive the same way, under the same inflate strategy
-            // and the same cache policy.
+            // opens the archive the same way, under the same cache policy.
             if args.list_members {
                 let mut out = escape::Escaped::new(buf, escape_stdout);
-                return search::list_members(&ctx, &job.path, strategy, &mut out);
+                return search::list_members(&ctx, &job.path, &mut out);
             }
             let mut printer = print::build(&args.print, buf);
-            search::search_archive(&ctx, &job.path, searcher, &mut printer, strategy)
+            search::search_archive(&ctx, &job.path, searcher, &mut printer)
         },
         |done| {
             // From the sink's own verdict, never from "did this archive write

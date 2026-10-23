@@ -4,7 +4,7 @@ use std::process::Command;
 fn help_lists_the_archive_flags() {
     let out = Command::new(env!("CARGO_BIN_EXE_trg")).arg("--help").output().unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--glob", "--list-members", "--archive-sep", "--inflate", "--turbo", "--escape"] {
+    for flag in ["--glob", "--list-members", "--archive-sep", "--turbo", "--escape"] {
         assert!(s.contains(flag), "help is missing {flag}");
     }
 }

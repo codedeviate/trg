@@ -144,12 +144,9 @@ run("zgrep -a", f"zgrep -a '{pat}' {g}")
 run("rg -za -j1", f"rg -za -j1 '{pat}' {corpus}/")
 run("rg -za (all cores)", f"rg -za '{pat}' {corpus}/")
 run(f"trg -j1 ({name})", f"{trg} -j1 '{pat}' {corpus}/")
-run("trg -j1 --inflate=buffer 1G", f"{trg} -j1 --inflate=buffer --inflate-budget 1G '{pat}' {corpus}/")
 run("trg -j1 --no-drop-cache", f"{trg} -j1 --no-drop-cache '{pat}' {corpus}/")
 run("trg --turbo", f"{trg} --turbo '{pat}' {corpus}/")
 if trg_ng:
     run("trg -j1 (zlib-ng)", f"{trg_ng} -j1 '{pat}' {corpus}/")
-    run("trg -j1 --inflate=buffer (ng)",
-        f"{trg_ng} -j1 --inflate=buffer --inflate-budget 1G '{pat}' {corpus}/")
     run("trg --turbo (zlib-ng)", f"{trg_ng} --turbo '{pat}' {corpus}/")
 PY

@@ -83,18 +83,6 @@ fn a_truncated_tar_zst_is_two_not_one() {
 }
 
 #[test]
-fn all_inflate_modes_agree_on_a_tar_zst() {
-    let f = helpers::tar_zst("i.tar.zst", &[("logs/a.log", b"NEEDLE one\n")]);
-    let p = f.path.to_str().unwrap();
-    let a = run(&["--inflate", "auto", "NEEDLE", p]).0;
-    let s = run(&["--inflate", "stream", "NEEDLE", p]).0;
-    let b = run(&["--inflate", "buffer", "NEEDLE", p]).0;
-    assert_eq!(a, s, "auto and stream disagreed on zstd");
-    assert_eq!(a, b, "buffer did not fall back cleanly on zstd");
-    assert!(a.contains("NEEDLE one"));
-}
-
-#[test]
 fn a_binary_member_in_a_tar_zst_is_still_skipped_without_dash_a() {
     let mut bin = b"NEEDLE".to_vec();
     bin.extend_from_slice(&[0u8, 1, 2, 0, 0]);

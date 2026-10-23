@@ -37,7 +37,7 @@ pub struct Outcome {
 /// Drops an archive's page-cache footprint when the reader that owns it dies.
 ///
 /// An RAII guard rather than an explicit call after the member walk, for two
-/// reasons. It keeps `open_decoded`/`open_decoded_with` signatures unchanged,
+/// reasons. It keeps the `open_decoded` signature unchanged,
 /// so nothing that already builds on them has to move; and, more importantly,
 /// it fires on the **error** paths too. A truncated archive — logrotate caught
 /// mid-write, the case `tgz_truncated` exists for — bails out of
@@ -102,22 +102,7 @@ pub fn open_decoded(path: &Path) -> anyhow::Result<Box<dyn Read + Send>> {
 /// Apache holds its live logfiles open for append, and evicting those pages
 /// would evict cache another process is actively using — precisely the harm
 /// this feature exists to prevent.
-pub fn open_decoded_dropping(
-    path: &Path,
-    strategy: crate::inflate::Strategy,
-    drop_cache: bool,
-) -> anyhow::Result<Box<dyn Read + Send>> {
-    if let crate::inflate::Strategy::Buffer { capacity, ceiling } = strategy {
-        match inflate_whole(path, capacity, ceiling, drop_cache) {
-            Ok(bytes) => return Ok(Box::new(io::Cursor::new(bytes))),
-            Err(e) => {
-                // Never fail the search because the fast path did not fit:
-                // fall back to streaming, which always works.
-                let msg = format!("{}: buffered inflate fell back to streaming ({e})", path.display());
-                eprintln!("trg: {}", crate::escape::for_stderr(&msg));
-            }
-        }
-    }
+pub fn open_decoded_dropping(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + Send>> {
     open_stream(path, drop_cache)
 }
 
@@ -153,61 +138,6 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + S
         Format::Xz => Guarded::boxed(liblzma::read::XzDecoder::new_multi_decoder(body), guard),
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     })
-}
-
-/// Whole-buffer inflate through a handle we control, so the compressed bytes
-/// are read under the same cache policy as the streaming path. `fs::read`
-/// inside `inflate::inflate_buffered` would open its own descriptor, which on
-/// macOS could never carry `F_NOCACHE`.
-///
-/// The guard is dropped at the end of this function rather than travelling
-/// with the returned `Cursor`: by then the file has been read whole and there
-/// is nothing left to keep warm.
-fn inflate_whole(
-    path: &Path,
-    capacity: usize,
-    ceiling: usize,
-    drop_cache: bool,
-) -> io::Result<Vec<u8>> {
-    let mut f = File::open(path)?;
-
-    let mut raw = vec![0u8; SNIFF_LEN];
-    let mut filled = 0;
-    while filled < raw.len() {
-        match f.read(&mut raw[filled..])? {
-            0 => break,
-            n => filled += n,
-        }
-    }
-    raw.truncate(filled);
-
-    let drop_cache = drop_cache && sniff(&raw) != Format::Plain;
-    crate::resource::prepare(&f, drop_cache);
-    let guard = CacheGuard { file: f.try_clone()?, drop_cache };
-
-    f.read_to_end(&mut raw)?;
-    let out = crate::inflate::inflate_bytes(&raw, path, capacity, ceiling);
-    drop(guard);
-    out
-}
-
-/// Like `open_decoded`, but lets the caller choose whole-buffer inflate.
-///
-/// `Strategy::Buffer` is only ever a fast path: a failure there — the ISIZE
-/// hint lied and the retry loop in `inflate_buffered` hit the budget-derived
-/// `ceiling` before it ran out of room, or the data was simply bad — falls
-/// back to `open_decoded`'s streaming path, which always works, and never
-/// fails the search outright. With a small `--inflate-budget` and a large
-/// archive this fallback is the expected, common case, not an error: the
-/// message `inflate_buffered` produces says so.
-///
-/// Signature frozen alongside `open_decoded`; see [`open_decoded_dropping`]
-/// for the cache-dropping variant.
-pub fn open_decoded_with(
-    path: &Path,
-    strategy: crate::inflate::Strategy,
-) -> anyhow::Result<Box<dyn Read + Send>> {
-    open_decoded_dropping(path, strategy, false)
 }
 
 /// Read the sniff window, then hand back a reader with those bytes replayed in

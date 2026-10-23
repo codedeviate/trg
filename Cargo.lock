@@ -316,24 +316,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "libdeflate-sys"
-version = "1.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6949d73714ba8c32d2757405b89c94e427f64f078a4041debe07e1b8e9e850e9"
-dependencies = [
- "cc",
-]
-
-[[package]]
-name = "libdeflater"
-version = "1.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b72b274104f747cb65358c918e38c6cd4a69937937a36c8ad3cfd516c9c471e"
-dependencies = [
- "libdeflate-sys",
-]
-
-[[package]]
 name = "liblzma"
 version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -603,7 +585,6 @@ dependencies = [
  "ignore",
  "lexopt",
  "libc",
- "libdeflater",
  "liblzma",
  "num_cpus",
  "tar",

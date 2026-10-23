@@ -139,7 +139,7 @@ trg --turbo -c ' 500 ' /var/log/archive/
 ```
 
 Run `trg --help` for every option, including `-j`, `--nice`,
-`--no-drop-cache`, `--inflate` and `--load-limit`.
+`--no-drop-cache` and `--load-limit`.
 
 ### Exit codes
 

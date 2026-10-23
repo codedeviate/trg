@@ -271,10 +271,9 @@ pub fn search_archive(
     path: &Path,
     s: &mut Searcher,
     printer: &mut crate::print::Printer<'_>,
-    strategy: crate::inflate::Strategy,
 ) -> crate::archive::Outcome {
     let (m, sep, globs, max_count) = (ctx.matcher, ctx.sep, ctx.globs, ctx.max_count);
-    let rdr = match crate::archive::open_decoded_dropping(path, strategy, ctx.drop_cache) {
+    let rdr = match crate::archive::open_decoded_dropping(path, ctx.drop_cache) {
         Ok(r) => r,
         Err(e) => {
             let mut o = crate::archive::Outcome::default();
@@ -319,20 +318,19 @@ pub fn search_archive(
 /// Listing is a question about the tar header; skipping a binary member is a
 /// question about its content, which `-T` never reads.
 ///
-/// Takes the same `ctx` and `strategy` as [`search_archive`], and opens through
-/// the same [`crate::archive::open_decoded_dropping`], because `-T` walks
-/// exactly as many bytes of exactly the same archives. Opening through the
-/// plain `open_decoded` instead would make `-T` the one mode that ignores
-/// `--inflate` and leaves a sweep's worth of archive pages in the cache —
+/// Takes the same `ctx` as [`search_archive`], and opens through the same
+/// [`crate::archive::open_decoded_dropping`], because `-T` walks exactly as
+/// many bytes of exactly the same archives. Opening through the plain
+/// `open_decoded` instead would make `-T` the one mode that leaves a sweep's
+/// worth of archive pages in the cache —
 /// precisely the pollution the cache-dropping work exists to prevent.
 pub fn list_members(
     ctx: &SearchCtx<'_>,
     path: &Path,
-    strategy: crate::inflate::Strategy,
     out: &mut dyn io::Write,
 ) -> crate::archive::Outcome {
     let (sep, globs) = (ctx.sep, ctx.globs);
-    let rdr = match crate::archive::open_decoded_dropping(path, strategy, ctx.drop_cache) {
+    let rdr = match crate::archive::open_decoded_dropping(path, ctx.drop_cache) {
         Ok(r) => r,
         Err(e) => {
             let mut o = crate::archive::Outcome::default();
