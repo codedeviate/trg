@@ -6,7 +6,10 @@
 #
 # Env:
 #   TRG         trg binary (default ./target/release/trg)
-#   TRG_ZLIBNG  optional second trg binary built with --features zlib-ng
+#   TRG_NAME    its label in the table (default "default build"); for the
+#               backend comparison, build TRG with --no-default-features and
+#               set this to miniz_oxide
+#   TRG_ZLIBNG  optional second trg binary built with zlib-ng (the default)
 #   REPS        repetitions per row (default 3); the minimum is reported
 #
 # Every row starts from a cold page cache: posix_fadvise(POSIX_FADV_DONTNEED)
@@ -30,12 +33,14 @@ corpus=${1:-/tmp/trgbench/corpus}
 pat=${2:-reqid=ZZB0RvmI4TWPrNPs5Rb}
 trg=${TRG:-./target/release/trg}
 trg_ng=${TRG_ZLIBNG:-}
+trg_name=${TRG_NAME:-default build}
 reps=${REPS:-3}
 
-exec python3 - "$corpus" "$pat" "$trg" "$trg_ng" "$reps" <<'PY'
+exec python3 - "$corpus" "$pat" "$trg" "$trg_ng" "$reps" "$trg_name" <<'PY'
 import ctypes, glob, os, resource, subprocess, sys, time
 
 corpus, pat, trg, trg_ng, reps = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+name = sys.argv[6]
 files = sorted(glob.glob(os.path.join(corpus, "*.tgz")))
 if not files:
     sys.exit(f"no archives under {corpus}")
@@ -129,7 +134,7 @@ run("pigz -p1 -dc (zlib floor)", f"pigz -p1 -dc {g}")
 run("zgrep -a", f"zgrep -a '{pat}' {g}")
 run("rg -za -j1", f"rg -za -j1 '{pat}' {corpus}/")
 run("rg -za (all cores)", f"rg -za '{pat}' {corpus}/")
-run("trg -j1 (default backend)", f"{trg} -j1 '{pat}' {corpus}/")
+run(f"trg -j1 ({name})", f"{trg} -j1 '{pat}' {corpus}/")
 run("trg -j1 --inflate=buffer 1G", f"{trg} -j1 --inflate=buffer --inflate-budget 1G '{pat}' {corpus}/")
 run("trg -j1 --no-drop-cache", f"{trg} -j1 --no-drop-cache '{pat}' {corpus}/")
 run("trg --turbo", f"{trg} --turbo '{pat}' {corpus}/")

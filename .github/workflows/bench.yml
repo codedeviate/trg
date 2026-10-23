@@ -1,0 +1,70 @@
+name: Benchmark
+
+# bench/compare.sh on a GitHub-hosted runner, for architectures there is no
+# other machine to measure on. Run by hand:
+#
+#     gh workflow run bench.yml                      # x86_64
+#     gh workflow run bench.yml -f runner=ubuntu-24.04-arm
+#
+# The corpus is synthetic (bench/synth_logs.py): real logs never go to a public
+# runner. Shared runner VMs are noisy, so read the ratios between rows, not the
+# absolute times. The results land in the run summary and as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label"
+        default: ubuntu-latest
+      reps:
+        description: "Repetitions per row (the best is reported)"
+        default: "3"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the tools being compared
+        run: sudo apt-get update -q && sudo apt-get install -y -q pigz ripgrep
+
+      # Both backends: zlib-ng (the default) and the pure-Rust fallback.
+      - name: Build
+        run: |
+          cargo build --release
+          cargo build --release --no-default-features --target-dir target/miniz
+          mkdir -p bin
+          cp target/release/trg bin/trg-ng
+          cp target/miniz/release/trg bin/trg-miniz
+
+      - name: Build the corpus
+        run: |
+          mkdir -p synth
+          python3 bench/synth_logs.py synth
+          SRC=synth bench/build_corpus.sh /tmp/trgbench
+
+      - name: Compare
+        run: |
+          {
+            echo "## $(uname -m), $(nproc) cores"
+            echo
+            echo '```'
+            lscpu | grep -E 'Model name|^CPU\(s\)|Thread|L2|L3' || true
+            echo "SIMD: $(grep -owE 'avx2|avx512f|avx512vl|pclmulqdq|asimd|pmull|crc32' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+            echo "$(rg --version | head -n1), $(gzip --version | head -n1), $(pigz --version 2>&1)"
+            echo
+            REPS=${{ inputs.reps }} TRG=bin/trg-miniz TRG_NAME=miniz_oxide TRG_ZLIBNG=bin/trg-ng \
+              bench/compare.sh /tmp/trgbench/corpus
+            echo '```'
+          } | tee results.md
+          cat results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ inputs.runner }}
+          path: results.md
