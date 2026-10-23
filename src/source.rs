@@ -129,14 +129,27 @@ fn parse_rule(p: &str) -> (bool, &str) {
 }
 
 /// `-g`: which members are searched.
+///
+/// Every glob matches against the member's whole path; one without a `/` also
+/// matches its file name, so `-g access.log` finds `logs/access.log` as it
+/// would in ripgrep. Strictly a superset of whole-path matching, which was all
+/// there was before 0.7.0, so no glob selects fewer members than it used to.
 pub struct Globs {
-    set: globset::GlobSet,
+    paths: globset::GlobSet,
+    names: globset::GlobSet,
+    /// Position on the command line of each glob in `names`.
+    name_at: Vec<usize>,
     rules: Rules,
 }
 
 impl Globs {
     pub fn is_match(&self, candidate: impl AsRef<Path>) -> bool {
-        self.rules.keep(self.set.matches(candidate.as_ref()).into_iter().max())
+        let candidate = candidate.as_ref();
+        let by_name = candidate.file_name().map(|n| self.names.matches(n)).unwrap_or_default();
+        let last = self.paths.matches(candidate).into_iter()
+            .chain(by_name.into_iter().map(|i| self.name_at[i]))
+            .max();
+        self.rules.keep(last)
     }
 }
 
@@ -144,15 +157,26 @@ pub fn build_globs(pats: &[String]) -> anyhow::Result<Option<Globs>> {
     if pats.is_empty() {
         return Ok(None);
     }
-    let mut b = globset::GlobSetBuilder::new();
-    let mut negated = Vec::new();
-    for p in pats {
+    let mut paths = globset::GlobSetBuilder::new();
+    let mut names = globset::GlobSetBuilder::new();
+    let (mut name_at, mut negated) = (Vec::new(), Vec::new());
+    for (i, p) in pats.iter().enumerate() {
         let (neg, glob) = parse_rule(p);
-        b.add(globset::Glob::new(glob)?);
+        let g = globset::Glob::new(glob)?;
+        if !glob.contains('/') {
+            names.add(g.clone());
+            name_at.push(i);
+        }
+        paths.add(g);
         negated.push(neg);
     }
     let any_positive = negated.contains(&false);
-    Ok(Some(Globs { set: b.build()?, rules: Rules { negated, any_positive } }))
+    Ok(Some(Globs {
+        paths: paths.build()?,
+        names: names.build()?,
+        name_at,
+        rules: Rules { negated, any_positive },
+    }))
 }
 
 /// `--archive-glob`: which files a directory walk keeps.

@@ -9,6 +9,13 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- `-g` globs without a `/` also match the member's file name, as in ripgrep
+  and as `--archive-glob` already did: `-g access.log` now finds
+  `logs/access.log`, where before it selected nothing. Matching the whole
+  member path still applies too, so no glob selects fewer members than before.
+
 ## [0.6.1] - 2026-10-23
 
 ### Changed

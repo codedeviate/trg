@@ -111,3 +111,37 @@ fn an_archive_glob_excluding_everything_is_two() {
     assert_eq!(c, Some(2));
     assert!(err.contains("--archive-glob matched no files"), "got: {err}");
 }
+
+/// A glob without `/` also matches the member's file name, as ripgrep's do and
+/// as `--archive-glob`'s do. `-g access.log` used to select nothing, since the
+/// member is `logs/access.log`.
+#[test]
+fn a_glob_without_a_slash_matches_the_file_name() {
+    let f = helpers::tgz("n.tgz", &[
+        ("logs/access.log", b"NEEDLE access\n"),
+        ("logs/deep/er/access.log", b"NEEDLE deep access\n"),
+        ("logs/error.log", b"NEEDLE error\n"),
+    ]);
+    let (out, _, c) = run(&["-g", "access.log", "NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("NEEDLE access") && out.contains("NEEDLE deep access"), "got: {out}");
+    assert!(!out.contains("NEEDLE error"), "got: {out}");
+    assert_eq!(c, Some(0));
+
+    let (out, _, _) = run(&["-g", "!access.log", "NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("NEEDLE error") && !out.contains("access"), "got: {out}");
+}
+
+/// A superset, never a change: everything a glob matched against the full
+/// member path before still matches, including a no-slash glob whose `*`
+/// crosses a directory.
+#[test]
+fn full_path_matching_still_applies() {
+    let f = helpers::tgz("p.tgz", &[
+        ("logs/a.log", b"NEEDLE logs a\n"),
+        ("other/a.log", b"NEEDLE other a\n"),
+    ]);
+    let (out, _, _) = run(&["-g", "logs/*.log", "NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("NEEDLE logs a") && !out.contains("NEEDLE other a"), "a / glob is still a path: {out}");
+    let (out, _, _) = run(&["-g", "l*a.log", "NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("NEEDLE logs a"), "a no-slash glob that crossed a / before must still: {out}");
+}

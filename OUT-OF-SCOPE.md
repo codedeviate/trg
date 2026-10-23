@@ -65,7 +65,3 @@ When an item moves into the codebase, delete it here and record it in
   scripts passing those flags. (The first measurement, 1.8-2.7x slower, was
   wrong: those archives were 1.4 MB over the 1 GiB budget, so every buffered
   row measured a failed attempt plus a full stream.)
-- **`-g` without a `/` could match the member's file name**, as
-  `--archive-glob` and ripgrep do. Today `-g access.log` never matches
-  `logs/access.log`; only patterns that start with `*` work that way, because
-  `*` crosses `/`. Changing it changes which members existing globs select.

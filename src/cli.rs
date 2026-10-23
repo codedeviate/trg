@@ -50,7 +50,8 @@ OUTPUT (same meaning as ripgrep):
                           suppressive wins: -q, then -l, then -c, then --json.
 
 ARCHIVES:
-    -g, --glob PAT        filter MEMBERS inside archives; repeatable. A
+    -g, --glob PAT        filter MEMBERS inside archives; repeatable. Without
+                          a `/` it also matches the member's file name. A
                           leading ! excludes; the last matching glob wins
         --archive-glob PAT
                           when walking a directory, search only the archives
