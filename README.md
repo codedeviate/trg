@@ -33,6 +33,21 @@ aarch64):
 
 `--turbo` still uses less total CPU than `rg -za` on 12 cores.
 
+On x86-64 (a 4-core AMD EPYC GitHub runner, 1.16 GB compressed of synthetic
+logs built to match the real ones' compression, via
+`.github/workflows/bench.yml`):
+
+| | wall | CPU | page cache left |
+|---|---:|---:|---:|
+| `zgrep -a` | 52.74 s | 56.78 s | 1162 MB |
+| `rg -za` (all cores) | 14.55 s | 57.66 s | 1162 MB |
+| `trg -j1` | 6.08 s | 6.07 s | 0 MB |
+| `trg --turbo` | 2.76 s | 7.84 s | 0 MB |
+
+9.4× less CPU than `zgrep`. Ratios move with the CPU — the same corpus gives
+6.1× on a GitHub arm64 runner (Neoverse-N2) — so treat each table as a
+measurement of that machine.
+
 ## Features
 
 - `archive:member/path:line:` output, line numbers correct per member.

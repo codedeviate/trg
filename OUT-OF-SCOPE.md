@@ -57,6 +57,14 @@ When an item moves into the codebase, delete it here and record it in
 
 - **Regression test for sched deadlock #4** (teardown guard armed after the
   spawn loop). Needs a fault-injection hook around `scope.spawn`.
-- **x86-64 benchmarks.** Every figure so far is aarch64; zlib-ng's NEON and AVX2
-  paths differ, so the backend comparison should be re-run before relying on it
-  there.
+- **`--inflate=buffer` is slower than streaming everywhere it has been
+  measured** (2026-10-23): 1.8x the CPU on x86-64 and 2.0x on arm64 runners,
+  2.7x in the neh-app container, mostly in extra system time. Every one of
+  those archives inflates to ~1 GB, so the cost may be the huge allocation.
+  `auto` does pick buffer mode by default for gzip archives that inflate to
+  under the 64 MB budget, and those have not been measured: that is the
+  question to answer before keeping or retiring the path.
+- **`-g` without a `/` could match the member's file name**, as
+  `--archive-glob` and ripgrep do. Today `-g access.log` never matches
+  `logs/access.log`; only patterns that start with `*` work that way, because
+  `*` crosses `/`. Changing it changes which members existing globs select.

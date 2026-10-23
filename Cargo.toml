@@ -58,11 +58,15 @@ zstd = "0.13.3"
 # suite green on both. Task 1's gate said 0.96x, but it ran on macOS, which is
 # neither the production platform nor the one every spec figure was measured on.
 #
+# On x86-64 (GitHub runner, AMD EPYC with AVX-512, synthetic corpus via
+# .github/workflows/bench.yml, 2026-10-23) the margin is smaller but holds:
+# 6.07 s against 8.25 s, 1.36x.
+#
 # The cost is a build-time dependency on cmake and a C toolchain (libz-ng-sys
 # builds zlib-ng from source). Where that is not available:
 #     cargo build --release --no-default-features
 # which falls back to miniz_oxide — pure Rust, still 2.9x cheaper than the
-# `gzip` binary that zgrep and `rg -z` both shell out to.
+# `gzip` binary that zgrep and `rg -z` both shell out to (5.9x on x86-64).
 default = ["zlib-ng"]
 zlib-ng = ["flate2/zlib-ng"]
 
