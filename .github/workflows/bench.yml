@@ -18,6 +18,9 @@ on:
       reps:
         description: "Repetitions per row (the best is reported)"
         default: "3"
+      suite:
+        description: "compare (trg against zgrep and rg) or inflate-modes (--inflate A/B at three archive sizes)"
+        default: compare
 
 env:
   CARGO_TERM_COLOR: always
@@ -43,12 +46,14 @@ jobs:
           cp target/miniz/release/trg bin/trg-miniz
 
       - name: Build the corpus
+        if: inputs.suite == 'compare'
         run: |
           mkdir -p synth
           python3 bench/synth_logs.py synth
           SRC=synth bench/build_corpus.sh /tmp/trgbench
 
       - name: Compare
+        if: inputs.suite == 'compare'
         run: |
           {
             echo "## $(uname -m), $(nproc) cores"
@@ -64,7 +69,28 @@ jobs:
           } | tee results.md
           cat results.md >> "$GITHUB_STEP_SUMMARY"
 
+      # Archives inflating to 4 MB and 42 MB (which `auto` buffers under the
+      # default 64 MB budget) and 1 GB (which needs a 2G budget to buffer).
+      - name: Inflate modes
+        if: inputs.suite == 'inflate-modes'
+        run: |
+          {
+            echo "## $(uname -m), $(nproc) cores: --inflate modes"
+            echo
+            echo '```'
+            lscpu | grep -E 'Model name' || true
+            for scale in 0.004 0.04 1; do
+              mkdir -p "synth-$scale"
+              python3 bench/synth_logs.py "synth-$scale" "$scale"
+              SRC="synth-$scale" bench/build_corpus.sh "/tmp/trgbench-$scale" > /dev/null
+              python3 bench/inflate_modes.py "/tmp/trgbench-$scale/corpus" bin/trg-ng ${{ inputs.reps }}
+              rm -rf "/tmp/trgbench-$scale"
+            done
+            echo '```'
+          } | tee results.md
+          cat results.md >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: bench-${{ inputs.runner }}
+          name: bench-${{ inputs.suite }}-${{ inputs.runner }}
           path: results.md

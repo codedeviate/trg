@@ -37,7 +37,7 @@ trg_name=${TRG_NAME:-default build}
 reps=${REPS:-3}
 
 exec python3 - "$corpus" "$pat" "$trg" "$trg_ng" "$reps" "$trg_name" <<'PY'
-import ctypes, glob, os, resource, subprocess, sys, time
+import ctypes, glob, os, resource, subprocess, sys, tempfile, time
 
 corpus, pat, trg, trg_ng, reps = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 name = sys.argv[6]
@@ -102,18 +102,27 @@ def run(label, cmd):
         evict()
         cold = resident_bytes()
         t0 = time.monotonic()
-        p = subprocess.Popen(["sh", "-c", cmd],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # stderr goes to a file, not /dev/null: a buffered row that silently
+        # fell back to streaming measures attempt + stream, and on 2026-10-23
+        # every one of them did, unseen. A file, not a pipe, because reading a
+        # pipe only after wait4 deadlocks once the child fills it.
+        err = tempfile.TemporaryFile()
+        p = subprocess.Popen(["sh", "-c", cmd], stdout=subprocess.DEVNULL, stderr=err)
         _, status, ru = os.wait4(p.pid, 0)
         wall = time.monotonic() - t0
+        err.seek(0)
+        fallbacks = err.read().decode(errors="replace").count("fell back")
+        err.close()
         code = os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
         p.returncode = code  # the child is already reaped; keep Popen quiet
         after = resident_bytes()
-        row = (wall, ru.ru_utime, ru.ru_stime, after / 1e6, cold / 1e6, code)
+        row = (wall, ru.ru_utime, ru.ru_stime, after / 1e6, cold / 1e6, code, fallbacks)
         if best is None or row[1] + row[2] < best[1] + best[2]:
             best = row
-    wall, u, s, res, cold, code = best
+    wall, u, s, res, cold, code, fallbacks = best
     warn = "" if cold < 8e6 else f"  !! {cold:.0f} MB still cached before the run"
+    if fallbacks:
+        warn += f"  !! {fallbacks} archives fell back to streaming"
     print(f"{label:<34} {wall:7.2f} {u:7.2f} {s:6.2f} {u + s:7.2f} "
           f"{res:9.1f}  {code}{warn}", flush=True)
 
