@@ -41,7 +41,8 @@ aarch64):
   *inside* an archive is searched as text.
 - ripgrep's flag names wherever the job is the same (`-i`, `-w`, `-F`, `-v`,
   `-C`, `-o`, `-c`, `-l`, `-q`, `--json`, …). `-g` filters *members* inside
-  archives.
+  archives, `--archive-glob` filters the archives a directory walk finds, and
+  both take ripgrep's `!` exclusions (`-g '!*.error.log'`).
 - Polite by default: `nice 10`, idle I/O priority, one archive at a time, and
   no page-cache footprint. `--turbo` lifts all of that when you need the answer
   now.

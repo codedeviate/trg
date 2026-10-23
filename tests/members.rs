@@ -104,9 +104,7 @@ fn member_globs_filter_which_members_are_searched() {
         ("logs/a.access.log", b"alpha\n"),
         ("logs/a.error.log", b"beta\n"),
     ]);
-    let mut b = globset::GlobSetBuilder::new();
-    b.add(globset::Glob::new("*.access.log").unwrap());
-    let set = b.build().unwrap();
+    let set = trg::source::build_globs(&["*.access.log".into()]).unwrap().unwrap();
 
     let rdr = trg::archive::open_decoded(&f.path).unwrap();
     let mut names = Vec::new();

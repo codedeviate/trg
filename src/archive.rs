@@ -240,7 +240,7 @@ fn peek<R: Read>(mut rdr: R) -> io::Result<Peeked<R>> {
 ///
 /// Never returns `Err`: a failure on one member is recorded in `Outcome.errors`
 /// and iteration continues, because one bad archive must not abort the others.
-pub fn for_each_member<R, F>(rdr: R, globs: Option<&globset::GlobSet>, mut f: F) -> Outcome
+pub fn for_each_member<R, F>(rdr: R, globs: Option<&crate::source::Globs>, mut f: F) -> Outcome
 where
     R: Read,
     F: FnMut(&str, &mut dyn Read) -> io::Result<()>,

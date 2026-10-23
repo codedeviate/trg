@@ -14,6 +14,16 @@ How versions are chosen before 1.0.0 is described in
 - GitHub releases carry prebuilt Linux binaries (x86_64 and aarch64, glibc
   2.17 or newer) with SHA-256 checksums, built and smoke-tested by
   `.github/workflows/release.yml` on each tag. 0.5.0 was backfilled.
+- Exclusion globs, as in ripgrep: a leading `!` excludes, for both `-g` and
+  `--archive-glob` (`-g '!*.error.log'`, `--archive-glob '!2026-09-*'`). When
+  several globs match, the last one given wins. With at least one non-`!`
+  glob the list is a whitelist; with only `!` globs, everything else is
+  searched.
+
+### Changed
+
+- A glob starting with `!` used to be matched literally, so it matched
+  nothing; it now excludes.
 
 ## [0.5.0] - 2026-10-23
 

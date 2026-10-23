@@ -193,7 +193,7 @@ pub fn display_path(archive: &Path, member: &str, sep: char) -> String {
 pub struct SearchCtx<'a> {
     pub matcher: &'a grep_regex::RegexMatcher,
     pub sep: char,
-    pub globs: Option<&'a globset::GlobSet>,
+    pub globs: Option<&'a crate::source::Globs>,
     pub max_count: Option<u64>,
     /// A request, not a decision: `open_decoded_dropping` narrows it to
     /// archives, so a plain live logfile is never evicted.
@@ -212,7 +212,7 @@ pub struct SearchCtx<'a> {
 /// for plain (non-tar) files, which arrive here as a single member named `""`.
 /// Without this second half, a mixed sweep of live logs plus archives would
 /// ignore `-g` for every live log.
-fn excluded_plain_file(member: &str, path: &Path, globs: Option<&globset::GlobSet>) -> bool {
+fn excluded_plain_file(member: &str, path: &Path, globs: Option<&crate::source::Globs>) -> bool {
     member.is_empty() && globs.is_some_and(|set| !set.is_match(path))
 }
 

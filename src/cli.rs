@@ -50,13 +50,15 @@ OUTPUT (same meaning as ripgrep):
                           suppressive wins: -q, then -l, then -c, then --json.
 
 ARCHIVES:
-    -g, --glob PAT        filter MEMBERS inside archives; repeatable
+    -g, --glob PAT        filter MEMBERS inside archives; repeatable. A
+                          leading ! excludes; the last matching glob wins
         --archive-glob PAT
                           when walking a directory, search only the archives
                           matching PAT; repeatable. Without a `/` it matches
                           the file name at any depth, with one the path below
                           the directory named. Files named explicitly are
-                          always searched. Matching nothing is exit 2
+                          always searched. A leading ! excludes, as for -g.
+                          Matching nothing is exit 2
     -T, --list-members    list member paths without searching. Takes no
                           PATTERN at all: every positional is a PATH, so
                           `trg -T *.tgz` lists all of them

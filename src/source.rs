@@ -98,20 +98,87 @@ pub fn resolve_with(
     (items, errors)
 }
 
+/// How an ordered list of globs decides, the way ripgrep and `.gitignore`
+/// read one: a glob starting with `!` excludes, and when several match, the
+/// last one given wins. If any glob is not an exclusion, a candidate matching
+/// none of them is left out — the list is a whitelist with exceptions.
+/// Otherwise it is a blacklist, and a candidate matching none is kept.
+struct Rules {
+    negated: Vec<bool>,
+    any_positive: bool,
+}
+
+impl Rules {
+    /// `last` is the highest index, in command-line order, of the globs that
+    /// matched.
+    fn keep(&self, last: Option<usize>) -> bool {
+        match last {
+            Some(i) => !self.negated[i],
+            None => !self.any_positive,
+        }
+    }
+}
+
+/// Split a leading `!` off. `\!` still means a literal `!`: globset reads the
+/// backslash as an escape.
+fn parse_rule(p: &str) -> (bool, &str) {
+    match p.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, p),
+    }
+}
+
+/// `-g`: which members are searched.
+pub struct Globs {
+    set: globset::GlobSet,
+    rules: Rules,
+}
+
+impl Globs {
+    pub fn is_match(&self, candidate: impl AsRef<Path>) -> bool {
+        self.rules.keep(self.set.matches(candidate.as_ref()).into_iter().max())
+    }
+}
+
+pub fn build_globs(pats: &[String]) -> anyhow::Result<Option<Globs>> {
+    if pats.is_empty() {
+        return Ok(None);
+    }
+    let mut b = globset::GlobSetBuilder::new();
+    let mut negated = Vec::new();
+    for p in pats {
+        let (neg, glob) = parse_rule(p);
+        b.add(globset::Glob::new(glob)?);
+        negated.push(neg);
+    }
+    let any_positive = negated.contains(&false);
+    Ok(Some(Globs { set: b.build()?, rules: Rules { negated, any_positive } }))
+}
+
 /// `--archive-glob`: which files a directory walk keeps.
 ///
 /// Split by shape, the way `.gitignore` reads a pattern: one without a `/`
 /// matches the file name at any depth (`2026-08-*.tgz`), one with a `/`
 /// matches the path relative to the directory that was named (`host1/*.tgz`).
+/// The two kinds stay one ordered list for [`Rules`], so the last match wins
+/// across them: `!2026-09-*` then `web1/*` keeps web1's September.
 pub struct ArchiveGlobs {
     names: globset::GlobSet,
     paths: globset::GlobSet,
+    /// Position on the command line of each glob in `names` and `paths`.
+    name_at: Vec<usize>,
+    path_at: Vec<usize>,
+    rules: Rules,
 }
 
 impl ArchiveGlobs {
     fn is_match(&self, root: &Path, file: &Path) -> bool {
-        file.file_name().is_some_and(|n| self.names.is_match(n))
-            || file.strip_prefix(root).is_ok_and(|rel| self.paths.is_match(rel))
+        let by_name = file.file_name().map(|n| self.names.matches(n)).unwrap_or_default();
+        let by_path = file.strip_prefix(root).map(|r| self.paths.matches(r)).unwrap_or_default();
+        let last = by_name.into_iter().map(|i| self.name_at[i])
+            .chain(by_path.into_iter().map(|i| self.path_at[i]))
+            .max();
+        self.rules.keep(last)
     }
 }
 
@@ -121,11 +188,27 @@ pub fn build_archive_globs(pats: &[String]) -> anyhow::Result<Option<ArchiveGlob
     }
     let mut names = globset::GlobSetBuilder::new();
     let mut paths = globset::GlobSetBuilder::new();
-    for p in pats {
-        let g = globset::Glob::new(p)?;
-        if p.contains('/') { paths.add(g) } else { names.add(g) };
+    let (mut name_at, mut path_at, mut negated) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, p) in pats.iter().enumerate() {
+        let (neg, glob) = parse_rule(p);
+        let g = globset::Glob::new(glob)?;
+        if glob.contains('/') {
+            paths.add(g);
+            path_at.push(i);
+        } else {
+            names.add(g);
+            name_at.push(i);
+        }
+        negated.push(neg);
     }
-    Ok(Some(ArchiveGlobs { names: names.build()?, paths: paths.build()? }))
+    let any_positive = negated.contains(&false);
+    Ok(Some(ArchiveGlobs {
+        names: names.build()?,
+        paths: paths.build()?,
+        name_at,
+        path_at,
+        rules: Rules { negated, any_positive },
+    }))
 }
 
 /// `standard_filters(false)`: a log directory is not a source tree, so
@@ -165,13 +248,4 @@ fn walk(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
     out
 }
 
-pub fn build_globs(pats: &[String]) -> anyhow::Result<Option<globset::GlobSet>> {
-    if pats.is_empty() {
-        return Ok(None);
-    }
-    let mut b = globset::GlobSetBuilder::new();
-    for p in pats {
-        b.add(globset::Glob::new(p)?);
-    }
-    Ok(Some(b.build()?))
-}
+
