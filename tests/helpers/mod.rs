@@ -76,6 +76,24 @@ pub fn tgz_nested_zst_skippable(name: &str, inner: &str, body: &[u8]) -> Fixture
     tgz(name, &[(inner, inner_zst.as_slice())])
 }
 
+/// zstd with a 2^`window_log` window and long-distance matching, as
+/// `zstd --long=N` writes it. Streamed with no pledged size, so the frame
+/// header declares the full window however small the content.
+pub fn zstd_long_bytes(raw: &[u8], window_log: u32) -> Vec<u8> {
+    use zstd::stream::raw::CParameter;
+    let mut e = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+    e.set_parameter(CParameter::WindowLog(window_log)).unwrap();
+    e.set_parameter(CParameter::EnableLongDistanceMatching(true)).unwrap();
+    e.write_all(raw).unwrap();
+    e.finish().unwrap()
+}
+
+/// A `.tar.zst` made like `tar ... | zstd --long=N`.
+pub fn tar_zst_long(name: &str, members: &[(&str, &[u8])], window_log: u32) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &zstd_long_bytes(&build_tar(members), window_log))
+}
+
 /// A `.tar.zst` cut off mid-stream.
 pub fn tar_zst_truncated(name: &str, members: &[(&str, &[u8])], keep: f64) -> Fixture {
     let full = zstd_bytes(&build_tar(members));

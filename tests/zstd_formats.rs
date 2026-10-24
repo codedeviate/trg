@@ -113,3 +113,26 @@ fn a_zst_member_starting_with_a_skippable_frame_is_decompressed() {
     assert!(out.contains("NEEDLE nested"), "got: {out}");
     assert_eq!(c, Some(0));
 }
+
+/// `zstd --long=28` and up declare windows past the 128 MB the zstd decoder
+/// accepts by default, and trg refused them: "Frame requires too much memory
+/// for decoding", exit 2. The window is the archive creator's choice, so a
+/// reader that refuses it cannot search those archives at all.
+#[test]
+fn a_tar_zst_with_a_large_long_distance_window_is_searched() {
+    for window_log in [28, 31] {
+        let f = helpers::tar_zst_long("l.tar.zst", &[("logs/a.log", b"one\nNEEDLE two\n")], window_log);
+        let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+        assert!(out.contains("logs/a.log:2:NEEDLE two"), "window 2^{window_log}: {out} / {err}");
+        assert_eq!(c, Some(0), "window 2^{window_log}: {err}");
+    }
+}
+
+#[test]
+fn a_zst_member_with_a_large_window_is_decompressed() {
+    let inner = helpers::zstd_long_bytes(b"NEEDLE nested\n", 31);
+    let f = helpers::tgz("w.tgz", &[("logs/access.log.1.zst", inner.as_slice())]);
+    let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("NEEDLE nested"), "got: {out} / {err}");
+    assert_eq!(c, Some(0));
+}

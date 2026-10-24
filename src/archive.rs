@@ -132,12 +132,27 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + S
         Format::Gzip => Guarded::boxed(flate2::read::MultiGzDecoder::new(body), guard),
         // `zstd`'s reader is streaming like flate2's, so the bounded-memory
         // guarantee and the cache guard carry over unchanged.
-        Format::Zstd => Guarded::boxed(zstd::stream::read::Decoder::new(body)?, guard),
+        Format::Zstd => Guarded::boxed(zstd_decoder(body)?, guard),
         // Multi-stream, like `MultiGzDecoder`: `cat a.xz b.xz` is a valid .xz
         // and `xz -d` decodes all of it.
         Format::Xz => Guarded::boxed(liblzma::read::XzDecoder::new_multi_decoder(body), guard),
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     })
+}
+
+/// A zstd decoder that accepts any window the format allows, up to 2^31.
+///
+/// The decoder's default ceiling is 2^27 (128 MB), the same as the `zstd`
+/// binary's, and archives made with `zstd --long=28` or more were refused:
+/// "Frame requires too much memory for decoding", exit 2. The window is chosen
+/// by whoever made the archive, so refusing it leaves those archives
+/// unsearchable; trg has no flag to raise it because nobody can know they need
+/// one until an incident. The memory is only ever as large as the archive's
+/// own frame header declares.
+fn zstd_decoder<'a, R: Read>(r: R) -> io::Result<zstd::stream::read::Decoder<'a, io::BufReader<R>>> {
+    let mut d = zstd::stream::read::Decoder::new(r)?;
+    d.window_log_max(31)?;
+    Ok(d)
 }
 
 /// Read the sniff window, then hand back a reader with those bytes replayed in
@@ -254,7 +269,7 @@ where
                 let mut dec = flate2::read::MultiGzDecoder::new(&mut inner);
                 f(&name, &mut dec)
             }
-            Format::Zstd => match zstd::stream::read::Decoder::new(&mut inner) {
+            Format::Zstd => match zstd_decoder(&mut inner) {
                 Ok(mut dec) => f(&name, &mut dec),
                 Err(e) => Err(e),
             },
