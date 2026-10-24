@@ -70,14 +70,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.arch }}-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
+      # No build cache: release binaries are built from scratch. A restored
+      # cache broke v0.7.1's build — zlib-ng's CMake cache still named the
+      # compiler wrapper of the previous cargo-zigbuild, which no longer
+      # existed.
       # zig is the linker that lets cargo-zigbuild target glibc 2.17.
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+      # Pinned, like zig above: "latest" moved from 0.23.4 to 0.24.0 between
+      # two releases on consecutive days. Bump deliberately.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild@0.24.0
 
       - name: Tag must match the Cargo.toml version
         run: |
