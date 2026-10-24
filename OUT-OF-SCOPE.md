@@ -26,6 +26,14 @@ When an item moves into the codebase, delete it here and record it in
 - **Parallelism inside a single gzip archive.** gzip has no index, so member N
   cannot be reached without inflating members 1..N-1. This is the format, not
   an implementation gap.
+- **A stdout signal for a `-c` member that matched and then hit binary data.**
+  The count is genuinely unknown. `rg -c` over a directory prints nothing for
+  such a file too (and exits 1; trg exits 0), and archive members are searched
+  the way rg searches files it discovers, not files it is handed. Any marker on
+  stdout breaks `-c`'s rg-compatible `member:count` format for
+  every script that parses it. The stderr note (`binary data; count
+  suppressed`) and the exit code already carry it, and both cost a pipeline
+  nothing. Decided 2026-10-24.
 
 ### Not built, for now
 
@@ -42,15 +50,10 @@ When an item moves into the codebase, delete it here and record it in
 ### Features
 
 - **Adaptive `--load-limit`** — a feedback loop that adjusts concurrency during
-  the run, instead of a one-off check at startup.
+  the run, instead of a one-off check at startup. Waits for a reason: the
+  default is `-j1` at `nice 10` with idle I/O, which already yields to Apache,
+  so this only matters for `-j`/`--turbo` runs during sustained load.
 - **Intra-archive parallelism for zstd** — frame boundaries make it possible,
   unlike gzip. It reopens `src/sched.rs`, which has produced four deadlocks;
-  treat it as a project, not a patch.
-- **A clearer `-c` signal for match-then-binary members** — stdout stays
-  rg-compatible today and a stderr note breaks the silence, but a script that
-  reads only stdout still has to check `$?`.
-
-### Engineering
-
-- **Regression test for sched deadlock #4** (teardown guard armed after the
-  spawn loop). Needs a fault-injection hook around `scope.spawn`.
+  treat it as a project, not a patch. Waits for zstd archives on the servers:
+  today they are gzip.
