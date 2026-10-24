@@ -41,7 +41,11 @@ import ctypes, glob, os, resource, subprocess, sys, tempfile, time
 
 corpus, pat, trg, trg_ng, reps = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 name = sys.argv[6]
+# Whichever format build_corpus.sh made: the reference tools differ per format.
 files = sorted(glob.glob(os.path.join(corpus, "*.tgz")))
+zstd = not files
+if zstd:
+    files = sorted(glob.glob(os.path.join(corpus, "*.tar.zst")))
 if not files:
     sys.exit(f"no archives under {corpus}")
 
@@ -135,12 +139,16 @@ print(f"{'strategy':<34} {'wall':>7} {'user':>7} {'sys':>6} {'cpu':>7} "
       f"{'cached':>9}  rc")
 print("-" * 83)
 
-g = os.path.join(corpus, "*.tgz")
+g = os.path.join(corpus, "*.tar.zst" if zstd else "*.tgz")
 run("cat > /dev/null (I/O floor)", f"cat {g}")
-run("gzip -dc (inflate floor)", f"gzip -dc {g}")
-run("pigz -dc (zlib, threaded)", f"pigz -dc {g}")
-run("pigz -p1 -dc (zlib floor)", f"pigz -p1 -dc {g}")
-run("zgrep -a", f"zgrep -a '{pat}' {g}")
+if zstd:
+    run("zstd -dc (decompress floor)", f"zstd -dc {g}")
+    run("zstdgrep -a", f"zstdgrep -a '{pat}' {g}")
+else:
+    run("gzip -dc (inflate floor)", f"gzip -dc {g}")
+    run("pigz -dc (zlib, threaded)", f"pigz -dc {g}")
+    run("pigz -p1 -dc (zlib floor)", f"pigz -p1 -dc {g}")
+    run("zgrep -a", f"zgrep -a '{pat}' {g}")
 run("rg -za -j1", f"rg -za -j1 '{pat}' {corpus}/")
 run("rg -za (all cores)", f"rg -za '{pat}' {corpus}/")
 run(f"trg -j1 ({name})", f"{trg} -j1 '{pat}' {corpus}/")

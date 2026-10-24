@@ -11,6 +11,15 @@ set -euo pipefail
 
 out=${1:-/tmp/trgbench}
 src=${SRC:-/var/log/apache2}
+# gzip (.tgz) or zstd (.tar.zst). zstd is made the way the servers have made
+# archives since 2026-10: `tar --zstd` defaults, level 3, one frame, 2 MiB
+# window (from `zstd -lv` on a production archive).
+compress=${COMPRESS:-gzip}
+case $compress in
+  gzip) ext=tgz ;;
+  zstd) ext=tar.zst ;;
+  *) echo "COMPRESS must be gzip or zstd" >&2; exit 1 ;;
+esac
 
 for f in SE.requests SE.log SE.error; do
   [ -r "$src/$f" ] || { echo "missing $src/$f" >&2; exit 1; }
@@ -25,9 +34,13 @@ for i in $(seq -w 1 45); do
   cp "$src/SE.error" "$out/stage/logs/vhost$i.error.log"
 done
 
-tar -czf "$out/one.tgz" -C "$out/stage" logs
-for i in $(seq -w 1 20); do cp "$out/one.tgz" "$out/corpus/access-2026-08-$i.tgz"; done
-rm -rf "$out/stage" "$out/one.tgz"
+if [ "$compress" = zstd ]; then
+  tar -cf - -C "$out/stage" logs | zstd -q -3 -o "$out/one.$ext"
+else
+  tar -czf "$out/one.$ext" -C "$out/stage" logs
+fi
+for i in $(seq -w 1 20); do cp "$out/one.$ext" "$out/corpus/access-2026-08-$i.$ext"; done
+rm -rf "$out/stage" "$out/one.$ext"
 
-echo "members per archive: $(tar -tzf "$out/corpus/access-2026-08-01.tgz" | wc -l)"
+echo "members per archive: $(tar -tf "$out/corpus/access-2026-08-01.$ext" | wc -l)"
 du -sh "$out/corpus"

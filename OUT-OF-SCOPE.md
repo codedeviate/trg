@@ -26,6 +26,12 @@ When an item moves into the codebase, delete it here and record it in
 - **Parallelism inside a single gzip archive.** gzip has no index, so member N
   cannot be reached without inflating members 1..N-1. This is the format, not
   an implementation gap.
+- **Parallelism inside a single zstd archive.** Only possible across zstd
+  frames, and the servers' archives (zstd since 2026-10, `tar --zstd`
+  defaults) are one frame: `zstd -lv` on a production archive reports
+  `Zstandard Frames: 1`. Plain `zstd`, `zstd -T0` and `tar --zstd` all write a
+  single frame; only multi-frame tools such as `pzstd` would make this
+  possible. Reconsider if the archiving changes to one of those.
 - **A stdout signal for a `-c` member that matched and then hit binary data.**
   The count is genuinely unknown. `rg -c` over a directory prints nothing for
   such a file too (and exits 1; trg exits 0), and archive members are searched
@@ -53,7 +59,3 @@ When an item moves into the codebase, delete it here and record it in
   the run, instead of a one-off check at startup. Waits for a reason: the
   default is `-j1` at `nice 10` with idle I/O, which already yields to Apache,
   so this only matters for `-j`/`--turbo` runs during sustained load.
-- **Intra-archive parallelism for zstd** — frame boundaries make it possible,
-  unlike gzip. It reopens `src/sched.rs`, which has produced four deadlocks;
-  treat it as a project, not a patch. Waits for zstd archives on the servers:
-  today they are gzip.

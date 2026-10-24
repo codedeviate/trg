@@ -18,6 +18,9 @@ on:
       reps:
         description: "Repetitions per row (the best is reported)"
         default: "3"
+      compress:
+        description: "Corpus format: gzip or zstd"
+        default: gzip
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,7 +34,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install the tools being compared
-        run: sudo apt-get update -q && sudo apt-get install -y -q pigz ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y -q pigz ripgrep zstd
 
       # Both backends: zlib-ng (the default) and the pure-Rust fallback.
       - name: Build
@@ -46,12 +49,12 @@ jobs:
         run: |
           mkdir -p synth
           python3 bench/synth_logs.py synth
-          SRC=synth bench/build_corpus.sh /tmp/trgbench
+          SRC=synth COMPRESS=${{ inputs.compress }} bench/build_corpus.sh /tmp/trgbench
 
       - name: Compare
         run: |
           {
-            echo "## $(uname -m), $(nproc) cores"
+            echo "## $(uname -m), $(nproc) cores, ${{ inputs.compress }} corpus"
             echo
             echo '```'
             lscpu | grep -E 'Model name|^CPU\(s\)|Thread|L2|L3' || true
@@ -66,5 +69,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bench-${{ inputs.runner }}
+          name: bench-${{ inputs.compress }}-${{ inputs.runner }}
           path: results.md
