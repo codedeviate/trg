@@ -9,6 +9,17 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-24
+
+### Fixed
+
+- zstd archives made with a long-distance window larger than 128 MB
+  (`zstd --long=28` up to `--long=31`) were refused with "Frame requires too
+  much memory for decoding", exit 2, so they could not be searched at all.
+  trg now accepts any window the format allows. Memory follows the data
+  actually decoded, not the declared window: a `--long=31` archive of 91 MB
+  peaked at 94 MB.
+
 ## [0.7.1] - 2026-10-24
 
 ### Fixed
@@ -229,7 +240,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/codedeviate/trg/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/codedeviate/trg/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/codedeviate/trg/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/codedeviate/trg/compare/v0.6.0...v0.6.1
