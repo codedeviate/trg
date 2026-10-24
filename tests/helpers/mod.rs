@@ -56,6 +56,26 @@ pub fn tgz_nested_zst(name: &str, inner: &str, body: &[u8]) -> Fixture {
     tgz(name, &[(inner, inner_zst.as_slice())])
 }
 
+/// `bytes` behind a zstd skippable frame, the way pzstd writes its output:
+/// magic 0x184D2A50, a 4-byte size, then that many bytes of metadata.
+pub fn with_skippable_frame(bytes: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x50, 0x2A, 0x4D, 0x18, 4, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF];
+    out.extend_from_slice(bytes);
+    out
+}
+
+/// A `.tar.zst` whose stream starts with a skippable frame.
+pub fn tar_zst_skippable(name: &str, members: &[(&str, &[u8])]) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &with_skippable_frame(&zstd_bytes(&build_tar(members))))
+}
+
+/// A `.tgz` whose member is zstd behind a skippable frame.
+pub fn tgz_nested_zst_skippable(name: &str, inner: &str, body: &[u8]) -> Fixture {
+    let inner_zst = with_skippable_frame(&zstd_bytes(body));
+    tgz(name, &[(inner, inner_zst.as_slice())])
+}
+
 /// A `.tar.zst` cut off mid-stream.
 pub fn tar_zst_truncated(name: &str, members: &[(&str, &[u8])], keep: f64) -> Fixture {
     let full = zstd_bytes(&build_tar(members));

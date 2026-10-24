@@ -22,6 +22,13 @@ pub fn sniff(head: &[u8]) -> Format {
     if head.len() >= 4 && head[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
         return Format::Zstd;
     }
+    // A zstd skippable frame (magic 0x184D2A50..=0x184D2A5F), which pzstd and
+    // others put before the data frames. The decoder skips it; missing it here
+    // made the whole archive look like plain text, searched as compressed
+    // bytes, for an exit 1 about data never read.
+    if head.len() >= 4 && (0x50..=0x5F).contains(&head[0]) && head[1..4] == [0x2A, 0x4D, 0x18] {
+        return Format::Zstd;
+    }
     if head.len() >= 6 && head[..6] == [0xFD, b'7', b'z', b'X', b'Z', 0x00] {
         return Format::Xz;
     }
@@ -57,6 +64,18 @@ mod tests {
     #[test]
     fn detects_zstd_from_magic() {
         assert_eq!(sniff(&[0x28, 0xB5, 0x2F, 0xFD, 0x00]), Format::Zstd);
+    }
+
+    /// pzstd and other tools start with a skippable frame (magic
+    /// 0x184D2A50..=0x184D2A5F, little-endian) before any data frame. Taken
+    /// for plain text, the archive's compressed bytes were "searched" and the
+    /// run exited 1: clean logs, from data never read.
+    #[test]
+    fn a_skippable_frame_is_zstd() {
+        for low in 0x50..=0x5F {
+            assert_eq!(sniff(&[low, 0x2A, 0x4D, 0x18, 4, 0, 0, 0]), Format::Zstd, "magic {low:#x}");
+        }
+        assert_eq!(sniff(&[0x60, 0x2A, 0x4D, 0x18, 4, 0, 0, 0]), Format::Plain, "just past the range");
     }
 
     #[test]

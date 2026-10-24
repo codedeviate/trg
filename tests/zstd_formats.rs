@@ -94,3 +94,22 @@ fn a_binary_member_in_a_tar_zst_is_still_skipped_without_dash_a() {
     assert!(out_a.contains("blob.bin"), "-a must force it: {out_a}");
     assert_eq!(c, Some(0));
 }
+
+/// pzstd output begins with a skippable frame. Read as plain text, the
+/// archive's compressed bytes were searched as one binary "file" and the run
+/// exited 1 — a claim of clean logs about data that was never decompressed.
+#[test]
+fn a_tar_zst_starting_with_a_skippable_frame_is_searched() {
+    let f = helpers::tar_zst_skippable("p.tar.zst", &[("logs/a.log", b"one\nNEEDLE two\n")]);
+    let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("logs/a.log:2:NEEDLE two"), "got: {out} / {err}");
+    assert_eq!(c, Some(0));
+}
+
+#[test]
+fn a_zst_member_starting_with_a_skippable_frame_is_decompressed() {
+    let f = helpers::tgz_nested_zst_skippable("m.tgz", "logs/access.log.1.zst", b"NEEDLE nested\n");
+    let (out, _, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("NEEDLE nested"), "got: {out}");
+    assert_eq!(c, Some(0));
+}
