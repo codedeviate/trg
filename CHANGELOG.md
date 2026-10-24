@@ -9,6 +9,16 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-24
+
+### Fixed
+
+- A zstd archive (or `.zst` member) that starts with a skippable frame — as
+  `pzstd` output does — was taken for plain text. Its compressed bytes were
+  searched as one binary file and the run exited 1, a claim of clean logs
+  about data that was never decompressed. Skippable frames
+  (`0x184D2A50`–`0x184D2A5F`) are now recognised as zstd.
+
 ## [0.7.0] - 2026-10-23
 
 ### Removed
@@ -219,7 +229,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/codedeviate/trg/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/codedeviate/trg/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/codedeviate/trg/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/codedeviate/trg/compare/v0.5.0...v0.6.0

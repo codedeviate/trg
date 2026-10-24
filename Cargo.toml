@@ -2,7 +2,7 @@
 # Published as `targrep` (the project's name); the library and binary are
 # still `trg`, so `cargo install targrep` puts `trg` on the PATH.
 name = "targrep"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 # globset and ignore need 1.88. CI checks it (the msrv job), so a dependency
 # bump that raises it fails there rather than in someone's `cargo install`.
