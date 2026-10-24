@@ -301,7 +301,28 @@ pub fn run<C, F, E>(
     make_buffer: impl Fn() -> termcolor::Buffer + Send + Sync,
     make_worker: impl Fn() -> C + Send + Sync,
     work: F,
+    emit: E,
+) -> std::io::Result<()>
+where
+    F: Fn(&Job, &mut C, &mut termcolor::Buffer) -> crate::archive::Outcome + Send + Sync,
+    E: FnMut(&Done) -> std::io::Result<()>,
+{
+    run_with_spawn_hook(jobs, cfg, make_buffer, make_worker, work, emit, |_| {})
+}
+
+/// [`run`], with `before_spawn(i)` called just before worker `i` is spawned.
+///
+/// A fault-injection point and nothing else: a panic from it stands in for
+/// `scope.spawn` panicking when the OS refuses a thread, which no test can
+/// provoke for real. `run` passes a no-op, which compiles away.
+fn run_with_spawn_hook<C, F, E>(
+    jobs: Vec<Job>,
+    cfg: Config,
+    make_buffer: impl Fn() -> termcolor::Buffer + Send + Sync,
+    make_worker: impl Fn() -> C + Send + Sync,
+    work: F,
     mut emit: E,
+    before_spawn: impl Fn(usize),
 ) -> std::io::Result<()>
 where
     F: Fn(&Job, &mut C, &mut termcolor::Buffer) -> crate::archive::Outcome + Send + Sync,
@@ -378,7 +399,8 @@ where
         // end of the same scope regardless of where it's declared.
         let _teardown = Teardown { state: &state, space: &space, wake: &wake, stop: &stop };
 
-        for _ in 0..live {
+        for i in 0..live {
+            before_spawn(i);
             let (next, stop, state, wake) = (&next, &stop, &state, &wake);
             let space = &space;
             let (jobs, work, make_buffer, make_worker) =
@@ -655,6 +677,57 @@ fn flush_parked(
             st.batch_bytes += len;
             *flag = true;
             batch.push(d);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Deadlock #4: the teardown guard was once armed *after* the spawn loop.
+    /// If `scope.spawn` panics for worker 1 — the OS refusing a thread — while
+    /// worker 0 is parked on backpressure, nothing would wake worker 0, and
+    /// `thread::scope` would wait forever to join it. The hook stands in for
+    /// the refused spawn, since the real one cannot be provoked on demand.
+    ///
+    /// The run happens on its own thread so a regression fails here after
+    /// `PATIENCE` instead of hanging the whole suite.
+    #[test]
+    fn a_spawn_failure_does_not_strand_a_parked_worker() {
+        const PATIENCE: Duration = Duration::from_secs(10);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let jobs = (0..4)
+                .map(|i| Job { index: i, path: std::path::PathBuf::from(format!("j{i}")) })
+                .collect();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_with_spawn_hook(
+                    jobs,
+                    // Worker 0's first job overfills the cap, so it parks on
+                    // backpressure: no collector is running to drain it.
+                    Config { workers: 4, sorted: true, spill_bytes: 8 },
+                    termcolor::Buffer::no_color,
+                    || (),
+                    |_job, _c: &mut (), b| {
+                        use std::io::Write;
+                        write!(b, "{}", "y".repeat(100)).unwrap();
+                        crate::archive::Outcome::default()
+                    },
+                    |_done: &Done| Ok(()),
+                    |i| {
+                        if i == 1 {
+                            panic!("injected: the OS refused thread {i}");
+                        }
+                    },
+                )
+            }));
+            let _ = tx.send(r.is_err());
+        });
+        match rx.recv_timeout(PATIENCE) {
+            Ok(panicked) => assert!(panicked, "the injected spawn failure must propagate"),
+            Err(_) => panic!("run hung after a spawn failure: a parked worker was never released"),
         }
     }
 }
