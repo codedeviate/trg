@@ -48,6 +48,23 @@ logs built to match the real ones' compression, via
 6.1× on a GitHub arm64 runner (Neoverse-N2) — so treat each table as a
 measurement of that machine.
 
+**zstd archives** narrow the CPU gap, because zstd decompresses fast for every
+tool. Same runner type, 928 MB of `.tar.zst` made like the production archives
+(`tar --zstd` defaults: one frame, 2 MiB window):
+
+| | x86-64 CPU | arm64 CPU | page cache left |
+|---|---:|---:|---:|
+| `zstd -dc` (decompression alone) | 10.07 s | 6.96 s | 928 MB |
+| `zstdgrep -a` | 23.64 s | 13.15 s | 928 MB |
+| `rg -za` (all cores) | 20.69 s | 15.69 s | 928 MB |
+| `trg -j1` | 9.95 s | 8.52 s | 0 MB |
+
+On zstd, `trg` costs about what decompression alone costs, 1.5–2.4× less CPU
+than `zstdgrep`. What stays the same is the rest: per-member line numbers, no
+page cache left behind, and idle I/O priority — which on the x86 runner's slow
+disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
+12 s) while using under half the CPU. That is the trade it is built to make.
+
 ## Features
 
 - `archive:member/path:line:` output, line numbers correct per member.
