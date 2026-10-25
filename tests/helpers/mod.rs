@@ -289,3 +289,76 @@ pub fn match_then_binary() -> Vec<u8> {
     body.push(b'\n');
     body
 }
+
+pub fn bz2_bytes(raw: &[u8]) -> Vec<u8> {
+    let mut e = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+    e.write_all(raw).unwrap();
+    e.finish().unwrap()
+}
+
+/// A `.tar.bz2`: same shape as `tgz`, different compression wrapper.
+pub fn tar_bz2(name: &str, members: &[(&str, &[u8])]) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &bz2_bytes(&build_tar(members)))
+}
+
+/// A `.tar.bz2` the way pbzip2 and lbzip2 write it: one bzip2 stream per
+/// `chunk` bytes of input, concatenated.
+pub fn tar_bz2_multistream(name: &str, members: &[(&str, &[u8])], chunk: usize) -> Fixture {
+    let tar = build_tar(members);
+    let out: Vec<u8> = tar.chunks(chunk).flat_map(bz2_bytes).collect();
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &out)
+}
+
+/// A `.tar.bz2` cut off mid-stream.
+pub fn tar_bz2_truncated(name: &str, members: &[(&str, &[u8])], keep: f64) -> Fixture {
+    let full = bz2_bytes(&build_tar(members));
+    let n = ((full.len() as f64) * keep) as usize;
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &full[..n.max(12)])
+}
+
+/// The lz4 frame format, what the `lz4` binary writes by default.
+pub fn lz4_bytes(raw: &[u8]) -> Vec<u8> {
+    let mut e = lz4_flex::frame::FrameEncoder::new(Vec::new());
+    e.write_all(raw).unwrap();
+    e.finish().unwrap()
+}
+
+/// The legacy format, `lz4 -l`: a magic, then blocks of up to 8 MiB of
+/// input, each a 4-byte little-endian compressed length and an lz4 block.
+/// Built by hand because lz4_flex only writes the frame format.
+pub fn lz4_legacy_bytes(raw: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x02, 0x21, 0x4C, 0x18];
+    for chunk in raw.chunks(8 << 20) {
+        let block = lz4_flex::block::compress(chunk);
+        out.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        out.extend_from_slice(&block);
+    }
+    out
+}
+
+/// A `.tar.lz4`.
+pub fn tar_lz4(name: &str, members: &[(&str, &[u8])]) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &lz4_bytes(&build_tar(members)))
+}
+
+/// A `.tar.lz4` cut off mid-stream.
+pub fn tar_lz4_truncated(name: &str, members: &[(&str, &[u8])], keep: f64) -> Fixture {
+    let full = lz4_bytes(&build_tar(members));
+    let n = ((full.len() as f64) * keep) as usize;
+    let dir = tempfile::tempdir().unwrap();
+    write(dir, name, &full[..n.max(8)])
+}
+
+/// Any bytes as an archive file of their own.
+pub fn raw(name: &str, bytes: &[u8]) -> Fixture {
+    write(tempfile::tempdir().unwrap(), name, bytes)
+}
+
+/// The tar of `members`, uncompressed, for wrapping by hand.
+pub fn tar_bytes(members: &[(&str, &[u8])]) -> Vec<u8> {
+    build_tar(members)
+}

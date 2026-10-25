@@ -136,6 +136,11 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + S
         // Multi-stream, like `MultiGzDecoder`: `cat a.xz b.xz` is a valid .xz
         // and `xz -d` decodes all of it.
         Format::Xz => Guarded::boxed(liblzma::read::XzDecoder::new_multi_decoder(body), guard),
+        // Multi-stream too, and here it is not a corner case: pbzip2 and
+        // lbzip2 write one stream per chunk, so a single-stream decoder would
+        // stop after the first few hundred kilobytes and report the rest clean.
+        Format::Bzip2 => Guarded::boxed(bzip2::read::MultiBzDecoder::new(body), guard),
+        Format::Lz4 => Guarded::boxed(lz4_decoder(&head, body)?, guard),
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     })
 }
@@ -153,6 +158,38 @@ fn zstd_decoder<'a, R: Read>(r: R) -> io::Result<zstd::stream::read::Decoder<'a,
     let mut d = zstd::stream::read::Decoder::new(r)?;
     d.window_log_max(31)?;
     Ok(d)
+}
+
+/// An lz4 decoder positioned past any leading skippable frames, reading every
+/// frame to the end of the input.
+///
+/// lz4_flex reads `lz4 -l` legacy frames by itself, but stops with an error
+/// at a skippable frame. Only a leading one is stepped over here, which the
+/// sniff has already measured; one between data frames is still an error, and
+/// so still a 2 rather than a short read.
+fn lz4_decoder<R: Read>(head: &[u8], mut r: R) -> io::Result<Lz4Frames<R>> {
+    let skip = crate::sniff::skippable_prefix(head).unwrap_or(0) as u64;
+    io::copy(&mut (&mut r).take(skip), &mut io::sink())?;
+    Ok(Lz4Frames(lz4_flex::frame::FrameDecoder::new(io::BufReader::new(r))))
+}
+
+/// lz4_flex's decoder reports end-of-file at the end of every frame, so that
+/// a caller can tell frames apart. `cat a.lz4 b.lz4` is one valid lz4 file,
+/// and stopping at the first frame boundary silently drops the rest. A `0` is
+/// passed on only when the input itself is exhausted; anything left means
+/// another frame, which the next read starts.
+struct Lz4Frames<R: Read>(lz4_flex::frame::FrameDecoder<io::BufReader<R>>);
+
+impl<R: Read> Read for Lz4Frames<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use io::BufRead;
+        loop {
+            let n = self.0.read(buf)?;
+            if n > 0 || buf.is_empty() || self.0.get_mut().fill_buf()?.is_empty() {
+                return Ok(n);
+            }
+        }
+    }
 }
 
 /// Read the sniff window, then hand back a reader with those bytes replayed in
@@ -261,7 +298,7 @@ where
         };
 
         // Exactly one level, and every compression format — logrotate leaves
-        // `access.log.1.gz` (or `.zst`, `.xz`) inside the archive, so a check that
+        // `access.log.1.gz` (or `.zst`, `.xz`, `.bz2`, `.lz4`) inside the archive, so a check that
         // named only gzip would silently hand a compressed member to the
         // searcher as binary.
         let res = match sniff(&inner_head) {
@@ -277,6 +314,14 @@ where
                 let mut dec = liblzma::read::XzDecoder::new_multi_decoder(&mut inner);
                 f(&name, &mut dec)
             }
+            Format::Bzip2 => {
+                let mut dec = bzip2::read::MultiBzDecoder::new(&mut inner);
+                f(&name, &mut dec)
+            }
+            Format::Lz4 => match lz4_decoder(&inner_head, &mut inner) {
+                Ok(mut dec) => f(&name, &mut dec),
+                Err(e) => Err(e),
+            },
             _ => f(&name, &mut inner),
         };
 

@@ -9,6 +9,18 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- bzip2 and lz4, detected from content like the other formats: `.tar.bz2`,
+  `.tar.lz4`, bare `.bz2` and `.lz4` logs, and `.bz2` or `.lz4` members inside
+  any archive, one level deep. Both decoders are pure Rust, so the static
+  Linux builds gain no C dependency.
+  - bzip2 reads every stream in the file, so archives written by pbzip2 or
+    lbzip2 (one stream per chunk) are read to the end.
+  - lz4 reads every frame in the file (`cat a.lz4 b.lz4`), the legacy
+    `lz4 -l` format, and steps over a leading skippable frame. A skippable
+    frame between two data frames is reported as an error (exit 2).
+
 ## [0.8.0] - 2026-10-25
 
 ### Changed
