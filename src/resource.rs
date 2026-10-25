@@ -21,6 +21,7 @@
 //! | [`finish`]  | `FADV_DONTNEED` (the actual work)  | no-op |
 
 use std::fs::File;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Lower our own scheduling priority. Unprivileged processes may always lower
 /// (never raise) their own, so this needs no capabilities and cannot fail in a
@@ -126,23 +127,71 @@ pub fn finish(_f: &File, _drop_cache: bool) {
     // macOS did its work in `prepare` via F_NOCACHE; nothing to undo.
 }
 
-/// One-minute load average, Linux only. Deliberately read once at startup —
-/// no feedback loop.
+/// One-minute load average, from `getloadavg(3)`: `/proc/loadavg` on Linux,
+/// the kernel's own figure on macOS. `None` where there is none.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn load_average_1m() -> Option<f64> {
-    let s = std::fs::read_to_string("/proc/loadavg").ok()?;
-    s.split_whitespace().next()?.parse().ok()
+    let mut avg = [0f64; 1];
+    let got = unsafe { libc::getloadavg(avg.as_mut_ptr(), 1) };
+    (got == 1).then_some(avg[0])
 }
 
-/// Clamp the concurrency to 1 when the box is already busier than the operator
-/// said they would tolerate. No source of load (anything but Linux) means no
-/// clamping, never a guess.
-pub fn clamp_jobs(jobs: usize, limit: Option<f64>) -> usize {
-    // Match on `limit` first. Matching on the tuple would evaluate
-    // `load_average_1m()` eagerly, reading `/proc/loadavg` on every startup
-    // even when `--load-limit` was never given.
-    let Some(max) = limit else { return jobs };
-    match load_average_1m() {
-        Some(now) if now > max => 1,
-        _ => jobs,
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn load_average_1m() -> Option<f64> {
+    None
+}
+
+/// How often the gate is reconsidered. Linux recomputes the load average every
+/// 5 s, so checking more often only reads the same number again.
+const LOAD_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The gate before any worker has started. All of the load is someone else's
+/// at this point, so it is compared as it stands.
+pub fn starting_gate(jobs: usize, limit: f64, load: f64) -> usize {
+    if load > limit { 1 } else { jobs.max(1) }
+}
+
+/// The gate after one more look at the load.
+///
+/// The load average counts trg's own workers too, so up to `gate` of it is
+/// ours and comes off before the comparison. Without that, `-j8 --load-limit
+/// 4` closes the gate on itself on an idle box. Over the limit, it drops
+/// straight to one job: the point of the flag is to get out of Apache's way,
+/// and by the time a 1-minute average shows a spike, the spike has been going
+/// for a while. Under it, it opens one worker per check, because the average
+/// lags in the other direction too, and snapping wide open after a spike
+/// walks straight back into it.
+pub fn next_gate(gate: usize, jobs: usize, load: f64, limit: f64) -> usize {
+    let others = load - gate as f64;
+    if others > limit { 1 } else { (gate + 1).min(jobs).max(1) }
+}
+
+/// Start adapting the concurrency to the load, or `None` when there is nothing
+/// to adapt: no `--load-limit`, a single job, or no load average to read.
+///
+/// The returned gate is what [`crate::sched::run_gated`] admits. A detached
+/// thread moves it every [`LOAD_CHECK`] and stops once nobody else holds the
+/// gate, so it costs one sleeping thread for the length of the run.
+pub fn load_gate(jobs: usize, limit: Option<f64>) -> Option<std::sync::Arc<AtomicUsize>> {
+    let limit = limit?;
+    if jobs <= 1 {
+        return None;
     }
+    let gate = std::sync::Arc::new(AtomicUsize::new(starting_gate(jobs, limit, load_average_1m()?)));
+    let held = std::sync::Arc::downgrade(&gate);
+    // No thread means no adapting, not no search and not no limit: the gate
+    // stays where it started, which is what the old one-off check did.
+    let _ = std::thread::Builder::new()
+        .name("trg-load".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(LOAD_CHECK);
+                let Some(gate) = held.upgrade() else { return };
+                if let Some(load) = load_average_1m() {
+                    let now = gate.load(Ordering::Relaxed);
+                    gate.store(next_gate(now, jobs, load, limit), Ordering::Relaxed);
+                }
+            }
+        });
+    Some(gate)
 }

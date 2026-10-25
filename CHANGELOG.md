@@ -9,6 +9,17 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- `--load-limit N` adapts during the run instead of checking once at
+  startup. All `-j` workers start; while the 1-minute load average from other
+  processes is above `N`, only one of them searches, and the rest wait between
+  archives. The load is rechecked every 5 s, and one job is added back per
+  check as it falls. trg's own workers are taken off the load before it is
+  compared, so a wide `-j` does not throttle itself. Output, ordering and
+  exit codes are unaffected.
+- `--load-limit` now works on macOS too. It was Linux-only.
+
 ## [0.7.2] - 2026-10-24
 
 ### Fixed

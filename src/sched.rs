@@ -65,6 +65,25 @@
 //! next-lowest [`Job::index`] only once every lower index has gone out. The one
 //! deliberate exception is the spill above.
 //!
+//! # The load gate
+//!
+//! [`run_gated`] takes a gate: how many workers may be inside a job at once,
+//! read before every claim and free to move while the run goes on. That is
+//! what makes `--load-limit` adaptive — every `-j` worker is started, and the
+//! ones the gate leaves out wait between archives, holding nothing.
+//!
+//! Places at the gate are counted, not assigned to workers: a gate of 1 admits
+//! whichever worker gets there first, never "worker 0". An assigned place
+//! would belong to a worker that might be dead, with the rest waiting behind
+//! it for good. A place is released by a drop guard, so a worker that unwinds
+//! gives its place back too.
+//!
+//! A worker held at the gate polls rather than waiting on a condvar. The gate
+//! is moved by a thread outside the pool that knows nothing of its locks, and
+//! a poll cannot miss a wakeup: it sees a raised gate, a stop, or the end of
+//! the job list within [`GATE_POLL`], whoever caused it. It costs nothing when
+//! no gate is given, and a few wakeups a second while one is closed.
+//!
 //! # Panics and early stop
 //!
 //! A panicking job must not be able to hang the process — during an incident a
@@ -96,6 +115,11 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
+
+/// How long a worker held at the gate sleeps between looks. Short against an
+/// archive, long against a busy loop.
+const GATE_POLL: Duration = Duration::from_millis(50);
 
 pub struct Job {
     pub index: usize,
@@ -244,6 +268,47 @@ impl Drop for Teardown<'_> {
     }
 }
 
+/// One place at the gate, given back on drop — unwinding included, so a dying
+/// worker cannot keep a place the others are waiting for.
+struct Permit<'a>(&'a AtomicUsize);
+
+impl Drop for Permit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Wait for a place at the gate. `None` means the worker should exit instead:
+/// the run has been stopped, or every job is already claimed. Checking those
+/// here, and not only after admission, is what keeps a held-back worker from
+/// outliving the run.
+fn admit<'a>(
+    gate: &AtomicUsize,
+    inside: &'a AtomicUsize,
+    stop: &AtomicBool,
+    next: &AtomicUsize,
+    n: usize,
+) -> Option<Permit<'a>> {
+    loop {
+        if stop.load(Ordering::Acquire) || next.load(Ordering::Relaxed) >= n {
+            return None;
+        }
+        // Clamped: a gate of 0 would admit nobody and the run would never end.
+        let cap = gate.load(Ordering::Relaxed).max(1);
+        let now = inside.load(Ordering::Acquire);
+        if now < cap {
+            if inside
+                .compare_exchange_weak(now, now + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Some(Permit(inside));
+            }
+            continue;
+        }
+        std::thread::sleep(GATE_POLL);
+    }
+}
+
 /// Call `work`, converting a panic into an error on that archive.
 ///
 /// The buffer is cleared on panic: a job that died mid-write may have left a
@@ -307,7 +372,28 @@ where
     F: Fn(&Job, &mut C, &mut termcolor::Buffer) -> crate::archive::Outcome + Send + Sync,
     E: FnMut(&Done) -> std::io::Result<()>,
 {
-    run_with_spawn_hook(jobs, cfg, make_buffer, make_worker, work, emit, |_| {})
+    run_with_spawn_hook(jobs, cfg, None, make_buffer, make_worker, work, emit, |_| {})
+}
+
+/// [`run`], with at most `gate` workers inside a job at any moment. The gate
+/// is re-read before every claim, so it may be moved during the run; values
+/// below 1 count as 1. See "The load gate" in the module docs.
+///
+/// At `workers == 1` the gate has nothing to hold back and is ignored.
+pub fn run_gated<C, F, E>(
+    jobs: Vec<Job>,
+    cfg: Config,
+    gate: &AtomicUsize,
+    make_buffer: impl Fn() -> termcolor::Buffer + Send + Sync,
+    make_worker: impl Fn() -> C + Send + Sync,
+    work: F,
+    emit: E,
+) -> std::io::Result<()>
+where
+    F: Fn(&Job, &mut C, &mut termcolor::Buffer) -> crate::archive::Outcome + Send + Sync,
+    E: FnMut(&Done) -> std::io::Result<()>,
+{
+    run_with_spawn_hook(jobs, cfg, Some(gate), make_buffer, make_worker, work, emit, |_| {})
 }
 
 /// [`run`], with `before_spawn(i)` called just before worker `i` is spawned.
@@ -315,9 +401,11 @@ where
 /// A fault-injection point and nothing else: a panic from it stands in for
 /// `scope.spawn` panicking when the OS refuses a thread, which no test can
 /// provoke for real. `run` passes a no-op, which compiles away.
+#[allow(clippy::too_many_arguments)]
 fn run_with_spawn_hook<C, F, E>(
     jobs: Vec<Job>,
     cfg: Config,
+    gate: Option<&AtomicUsize>,
     make_buffer: impl Fn() -> termcolor::Buffer + Send + Sync,
     make_worker: impl Fn() -> C + Send + Sync,
     work: F,
@@ -371,6 +459,8 @@ where
 
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
+    // Workers currently holding a place at the gate. Unused without one.
+    let inside = AtomicUsize::new(0);
     let state = Mutex::new(Shared {
         slots: (0..n).map(|_| None).collect(),
         ready: VecDeque::new(),
@@ -402,7 +492,7 @@ where
         for i in 0..live {
             before_spawn(i);
             let (next, stop, state, wake) = (&next, &stop, &state, &wake);
-            let space = &space;
+            let (space, inside) = (&space, &inside);
             let (jobs, work, make_buffer, make_worker) =
                 (&jobs, &work, &make_buffer, &make_worker);
             scope.spawn(move || {
@@ -433,6 +523,17 @@ where
                             st = space.wait(st).unwrap();
                         }
                     }
+
+                    // After backpressure, so a worker waiting for output to
+                    // drain does not also hold a place someone else could use.
+                    // Held until the job is deposited, at the end of this pass.
+                    let _permit = match gate {
+                        Some(g) => match admit(g, inside, stop, next, n) {
+                            Some(p) => Some(p),
+                            None => return,
+                        },
+                        None => None,
+                    };
 
                     // Checked before claiming work, so a write failure or a
                     // closed pipe stops the sweep at the next archive boundary
@@ -708,6 +809,7 @@ mod tests {
                     // Worker 0's first job overfills the cap, so it parks on
                     // backpressure: no collector is running to drain it.
                     Config { workers: 4, sorted: true, spill_bytes: 8 },
+                    None,
                     termcolor::Buffer::no_color,
                     || (),
                     |_job, _c: &mut (), b| {

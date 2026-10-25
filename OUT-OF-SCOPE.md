@@ -55,7 +55,5 @@ When an item moves into the codebase, delete it here and record it in
 
 ### Features
 
-- **Adaptive `--load-limit`** — a feedback loop that adjusts concurrency during
-  the run, instead of a one-off check at startup. Waits for a reason: the
-  default is `-j1` at `nice 10` with idle I/O, which already yields to Apache,
-  so this only matters for `-j`/`--turbo` runs during sustained load.
+Nothing at the moment. Adaptive `--load-limit`, the last item here, shipped
+in 0.8.0.

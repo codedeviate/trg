@@ -72,7 +72,9 @@ RESOURCES:
         --nice NUM        scheduling priority (default 10)
         --no-nice         do not lower priority
         --no-drop-cache   keep archive pages in the page cache
-        --load-limit N    clamp jobs if 1-min load average exceeds N
+        --load-limit N    run one job at a time while the 1-min load average
+                          from other processes exceeds N, and add jobs back
+                          as it falls. Rechecked every 5 s
 
     -h, --help            this message
     -V, --version         version

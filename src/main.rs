@@ -56,8 +56,12 @@ fn run() -> anyhow::Result<RunStatus> {
     // re-applying it.
     trg::resource::set_priority(args.nice);
     trg::resource::set_io_idle();
-    // Read once at startup, no feedback loop.
-    let jobs_count = trg::resource::clamp_jobs(args.jobs, args.load_limit);
+    // With --load-limit, all -j workers start and the gate decides how many may
+    // search at once, re-read from the load average every few seconds. Without
+    // it the gate is simply -j, and it never moves.
+    let jobs_count = args.jobs;
+    let gate = trg::resource::load_gate(jobs_count, args.load_limit)
+        .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(jobs_count)));
 
     let matcher = search::build_matcher(&args.patterns, &args.search)?;
 
@@ -110,9 +114,10 @@ fn run() -> anyhow::Result<RunStatus> {
         .map(|(i, p)| trg::sched::Job { index: i, path: p.clone() })
         .collect();
 
-    let written = trg::sched::run(
+    let written = trg::sched::run_gated(
         jobs,
         trg::sched::Config { workers: jobs_count, sorted: args.sort, spill_bytes: 64 * 1024 * 1024 },
+        &gate,
         || bw.buffer(),
         // Once per worker thread, never per archive: `Searcher` is not `Sync`,
         // so it cannot be shared, but its line buffer grows toward the heap
