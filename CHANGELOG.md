@@ -9,6 +9,8 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-25
+
 ### Changed
 
 - `--load-limit N` adapts during the run instead of checking once at
@@ -251,7 +253,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/codedeviate/trg/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/codedeviate/trg/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/codedeviate/trg/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/codedeviate/trg/compare/v0.6.1...v0.7.0
