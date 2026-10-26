@@ -303,3 +303,21 @@ fn help_and_version_still_exit_zero() {
     assert_eq!(run(&["--help"]).2, Some(0));
     assert_eq!(run(&["--version"]).2, Some(0));
 }
+
+/// In a sweep, an error that does not say which archive it came from cannot
+/// be acted on. Every diagnostic from inside an archive leads with its path.
+#[test]
+fn errors_from_inside_an_archive_name_the_archive() {
+    let ok = helpers::tgz("ok.tgz", &[("logs/a.log", b"fine\n")]);
+    let big = vec![b'x'; 400_000];
+    let cut = helpers::tgz_truncated("cut.tgz", &[("logs/a.log", &big)], 0.4);
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(["NEEDLE", ok.path.to_str().unwrap(), cut.path.to_str().unwrap()])
+        .output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(!err.is_empty());
+    for line in err.lines() {
+        assert!(line.starts_with(&format!("trg: {}: ", cut.path.display())), "unattributed: {line}");
+    }
+}

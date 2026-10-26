@@ -8,7 +8,7 @@ use crate::{print, search};
 
 pub const HELP: &str = "\
 trg — search inside compressed log archives
-(.tgz, .tar.zst, .tar.xz, .tar.bz2, .tar.lz4)
+(.tgz, .tar.zst, .tar.xz, .tar.bz2, .tar.lz4, .tar.Z, .zip)
 
 USAGE:
     trg [OPTIONS] PATTERN PATH...
@@ -98,6 +98,13 @@ NOTES (documented, and surprising the first time):
       no -z flag. gzip, zstd, xz, bzip2 and lz4 are recognised, each unwrapped
       one level, so a logrotate'd access.log.1.gz, .zst, .xz, .bz2 or .lz4
       inside the archive is searched as text rather than skipped as binary.
+      .Z (compress) is read too, but only as a whole file: a .Z member
+      inside an archive is reported unread, a 2.
+    A zip's members are searched like a tar's, compressed ones included. A
+      zip or tar inside another archive is searched as bytes, not opened.
+    .Z has no length and no checksum, so a truncated .Z reads as a shorter
+      file with no error. A .Z with no match is still a 1, with a note on
+      stderr that the file could not vouch for its own end.
     --inflate and --inflate-budget are accepted and ignored since 0.7.0, with
       a note on stderr: trg always streams.
 ";

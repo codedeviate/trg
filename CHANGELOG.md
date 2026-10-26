@@ -9,6 +9,30 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- `.zip` archives, through the `stuffr-formats` crate's zip container. A
+  zip's members are searched like a tar's: per-member line numbers, `-g`,
+  `-T`, binary detection, and one level of compression inside a member
+  (`access.log.1.gz` in a zip). Stored, deflate, deflate64, bzip2, LZMA, xz
+  and PPMd members are read. An encrypted member, a damaged one (CRC
+  mismatch), or records the archive cannot account for are reported and
+  make the run a 2. The members after an encrypted one are still searched.
+- Unix `compress` (`.Z`, `.tar.Z`), through stuffr's decoder. Only as a
+  whole file: a `.Z` member inside an archive is reported unread (exit 2)
+  rather than searched as binary.
+  - `.Z` records neither its length nor a checksum, so a truncated one reads
+    as a shorter file with no error. A `.Z` with no match is still a 1, but
+    trg prints a note on stderr saying the file could not vouch for its own
+    end.
+
+### Fixed
+
+- Errors from inside an archive did not say which archive: a sweep of a
+  month of logs could print `trg: tar entry: unexpected end of file` and
+  leave you to find it. Every such diagnostic now starts with the archive's
+  path.
+
 ## [0.9.0] - 2026-10-25
 
 ### Added

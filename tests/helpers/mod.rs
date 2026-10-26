@@ -362,3 +362,66 @@ pub fn raw(name: &str, bytes: &[u8]) -> Fixture {
 pub fn tar_bytes(members: &[(&str, &[u8])]) -> Vec<u8> {
     build_tar(members)
 }
+
+/// How a zip member is stored.
+#[derive(Clone, Copy)]
+pub enum ZipMethod {
+    Stored,
+    Deflated,
+    Bzip2,
+}
+
+/// A `.zip`, each member stored with `method`. Directory entries are added
+/// for every parent, as `zip -r` writes them.
+pub fn zip_bytes(members: &[(&str, &[u8])], method: ZipMethod) -> Vec<u8> {
+    use zip::write::SimpleFileOptions;
+    let m = match method {
+        ZipMethod::Stored => zip::CompressionMethod::Stored,
+        ZipMethod::Deflated => zip::CompressionMethod::Deflated,
+        ZipMethod::Bzip2 => zip::CompressionMethod::Bzip2,
+    };
+    let opts = SimpleFileOptions::default().compression_method(m);
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut dirs = std::collections::BTreeSet::new();
+    for (name, body) in members {
+        let mut at = 0;
+        while let Some(i) = name[at..].find('/') {
+            let dir = &name[..at + i + 1];
+            if dirs.insert(dir.to_string()) {
+                w.add_directory(dir, opts).unwrap();
+            }
+            at += i + 1;
+        }
+        w.start_file(*name, opts).unwrap();
+        w.write_all(body).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+pub fn zip(name: &str, members: &[(&str, &[u8])]) -> Fixture {
+    raw(name, &zip_bytes(members, ZipMethod::Deflated))
+}
+
+/// Unix `compress` (`.Z`), written by stuffr's encoder, the decoder's twin.
+pub fn z_bytes(raw: &[u8]) -> Vec<u8> {
+    use stuffr_core::Codec;
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Shared {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = stuffr_formats::legacy::compress_z::CompressZ
+        .encoder(Box::new(Shared(out.clone())), &Default::default())
+        .unwrap();
+    sink.write_all(raw).unwrap();
+    sink.finish().unwrap();
+    // `finish` consumed the sink and the writer inside it, so this is the
+    // last handle.
+    std::sync::Arc::try_unwrap(out).unwrap().into_inner().unwrap()
+}

@@ -195,7 +195,7 @@ pub struct SearchCtx<'a> {
     pub sep: char,
     pub globs: Option<&'a crate::source::Globs>,
     pub max_count: Option<u64>,
-    /// A request, not a decision: `open_decoded_dropping` narrows it to
+    /// A request, not a decision: `walk_archive` narrows it to
     /// archives, so a plain live logfile is never evicted.
     pub drop_cache: bool,
     /// Whether the run is in `-c` mode. Not used to choose a printer — `cli`
@@ -273,18 +273,10 @@ pub fn search_archive(
     printer: &mut crate::print::Printer<'_>,
 ) -> crate::archive::Outcome {
     let (m, sep, globs, max_count) = (ctx.matcher, ctx.sep, ctx.globs, ctx.max_count);
-    let rdr = match crate::archive::open_decoded_dropping(path, ctx.drop_cache) {
-        Ok(r) => r,
-        Err(e) => {
-            let mut o = crate::archive::Outcome::default();
-            o.errors.push(format!("{}: {e}", path.display()));
-            return o;
-        }
-    };
 
     let mut matched = false;
     let mut notes: Vec<String> = Vec::new();
-    let mut out = crate::archive::for_each_member(rdr, globs, |member, r| {
+    let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
         if excluded_plain_file(member, path, globs) {
             return Ok(());
         }
@@ -303,6 +295,15 @@ pub fn search_archive(
         }
         Ok(())
     });
+    // A note, not an error: nothing is known to be missing, and the format
+    // offers no way to find out. But a 1 is someone's "the logs are clean",
+    // and this file cannot back it up.
+    if out.unverified_end && !matched && out.errors.is_empty() {
+        notes.push(format!(
+            "{}: no match, but .Z cannot detect truncation: a cut-off file reads as a shorter one",
+            path.display()
+        ));
+    }
     out.matched = matched;
     out.notes = notes;
     out
@@ -319,7 +320,7 @@ pub fn search_archive(
 /// question about its content, which `-T` never reads.
 ///
 /// Takes the same `ctx` as [`search_archive`], and opens through the same
-/// [`crate::archive::open_decoded_dropping`], because `-T` walks exactly as
+/// [`crate::archive::walk_archive`], because `-T` walks exactly as
 /// many bytes of exactly the same archives. Opening through the plain
 /// `open_decoded` instead would make `-T` the one mode that leaves a sweep's
 /// worth of archive pages in the cache —
@@ -330,17 +331,9 @@ pub fn list_members(
     out: &mut dyn io::Write,
 ) -> crate::archive::Outcome {
     let (sep, globs) = (ctx.sep, ctx.globs);
-    let rdr = match crate::archive::open_decoded_dropping(path, ctx.drop_cache) {
-        Ok(r) => r,
-        Err(e) => {
-            let mut o = crate::archive::Outcome::default();
-            o.errors.push(format!("{}: {e}", path.display()));
-            return o;
-        }
-    };
 
     let mut listed = false;
-    let mut outcome = crate::archive::for_each_member(rdr, globs, |member, _| {
+    let mut outcome = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, _| {
         if excluded_plain_file(member, path, globs) {
             return Ok(());
         }

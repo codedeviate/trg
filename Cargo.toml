@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 authors = ["Thomas Björk"]
-description = "Search inside compressed log archives (.tgz, .tar.zst, .tar.xz, .tar.bz2, .tar.lz4) with ripgrep's flags and per-member line numbers"
+description = "Search inside compressed log archives (.tgz, .tar.zst, .tar.xz, .tar.bz2, .tar.lz4, .tar.Z, .zip) with ripgrep's flags and per-member line numbers"
 repository = "https://github.com/codedeviate/trg"
 homepage = "https://github.com/codedeviate/trg"
 readme = "README.md"
@@ -40,6 +40,8 @@ libc = "0.2.189"
 liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 lz4_flex = "0.14.0"
 num_cpus = "1.17.0"
+stuffr-core = "0.18.2"
+stuffr-formats = { version = "0.18.2", default-features = false, features = ["zip", "compress"] }
 tar = "0.4.46"
 termcolor = "1.4.1"
 zstd = "0.13.3"
@@ -50,6 +52,7 @@ libc = "0.2.189"
 liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 tar = "0.4.46"
 tempfile = "3.27.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2", "bzip2"] }
 zstd = "0.13.3"
 
 [features]

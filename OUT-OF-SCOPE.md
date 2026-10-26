@@ -43,10 +43,18 @@ When an item moves into the codebase, delete it here and record it in
 
 ### Not built, for now
 
-- **`.zip` archives.** Not "another decoder": zip's central directory makes
-  members individually seekable and skippable, which the streaming
-  `for_each_member` model cannot express. Skipping is the only reason to want
-  zip, so it needs a second traversal model. Reconsider if zip archives show up.
+- **A `.Z` member inside an archive.** stuffr's `.Z` decoder is reachable
+  only as a codec over a reader it owns (`'static`), and an archive member is
+  borrowed from the archive. Reported unread (exit 2), never searched as
+  binary. Building it needs stuffr to expose its `LzwZReader`, or a decoder of
+  trg's own; reconsider if a logrotate set up with `compresscmd compress`
+  shows up.
+- **Archives inside archives.** A zip or tar member that is itself a zip or
+  tar is searched as bytes. The one level of nesting is for compression, and
+  an archive in an archive is a container, not a compression.
+- **Other stuffr formats** (cpio, ar, lha, arj, arc, zoo; brotli, snappy,
+  lzip, lzma). Reachable the same way zip and `.Z` were, a cargo feature
+  each, but none of them holds logs on any server trg runs on.
 
 ## Wishlist
 

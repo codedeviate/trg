@@ -29,6 +29,24 @@ fn searching_an_archive_leaves_no_page_cache_behind() {
     assert!(res * 20 < np, "trg left {res}/{np} pages resident; expected near zero");
 }
 
+/// A zip is opened on a path of its own — read by seeking, through stuffr —
+/// so the cache guard has to be carried across to it rather than assumed.
+#[cfg(target_os = "linux")]
+#[test]
+fn searching_a_zip_leaves_no_page_cache_behind() {
+    let body = helpers::bulky_log();
+    let f = helpers::zip("r.zip", &[("logs/big.log", &body)]);
+    helpers::evict(&f.path);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(["req 42 GET", f.path.to_str().unwrap()])
+        .output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "expected a match; stderr: {}",
+               String::from_utf8_lossy(&out.stderr));
+    let (res, np) = helpers::resident_pages(&f.path);
+    println!("after trg on a zip:     {res}/{np} pages resident");
+    assert!(res * 20 < np, "trg left {res}/{np} pages of a zip resident; expected near zero");
+}
+
 /// The opt-out must actually opt out, otherwise `--no-drop-cache` is a lie.
 #[cfg(target_os = "linux")]
 #[test]

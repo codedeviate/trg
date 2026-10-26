@@ -32,6 +32,11 @@ pub struct Outcome {
     /// the run read everything and printed less than it found, which is worth
     /// telling an operator and must not turn a 0 or a 1 into a 2.
     pub notes: Vec<String>,
+    /// The archive's format cannot tell a complete file from a truncated one
+    /// (`.Z`), so "read everything" is only as true as the file. Set by
+    /// [`walk_archive`]; what to say about it is the caller's, since only
+    /// the caller knows whether anything matched.
+    pub unverified_end: bool,
 }
 
 /// Drops an archive's page-cache footprint when the reader that owns it dies.
@@ -118,6 +123,23 @@ pub fn open_decoded_dropping(path: &Path, drop_cache: bool) -> anyhow::Result<Bo
 /// fully cached regardless. Sixteen pages per archive against the alternative
 /// of setting `F_NOCACHE` on a live Apache log is the trade being made.
 fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + Send>> {
+    match open_input(path, drop_cache)? {
+        Opened::Stream(r, _) => Ok(r),
+        Opened::Zip(..) => anyhow::bail!("a zip is not a stream; it is read through walk_archive"),
+    }
+}
+
+/// An input, opened: a byte stream with its outer compression removed, or a
+/// zip, which is read by seeking and so cannot be one.
+enum Opened {
+    /// The stream, and whether its format can detect its own truncation.
+    Stream(Box<dyn Read + Send>, bool),
+    /// The file, rewound, and the guard that drops its pages when the walk is
+    /// over.
+    Zip(File, CacheGuard),
+}
+
+fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     let f = File::open(path)?;
     let dup = f.try_clone()?;
     let rdr = io::BufReader::with_capacity(64 * 1024, f);
@@ -128,7 +150,8 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + S
     crate::resource::prepare(&dup, drop_cache);
     let guard = CacheGuard { file: dup, drop_cache };
 
-    Ok(match format {
+    let unverified_end = format == Format::CompressZ;
+    let stream = match format {
         Format::Gzip => Guarded::boxed(flate2::read::MultiGzDecoder::new(body), guard),
         // `zstd`'s reader is streaming like flate2's, so the bounded-memory
         // guarantee and the cache guard carry over unchanged.
@@ -141,8 +164,148 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + S
         // stop after the first few hundred kilobytes and report the rest clean.
         Format::Bzip2 => Guarded::boxed(bzip2::read::MultiBzDecoder::new(body), guard),
         Format::Lz4 => Guarded::boxed(lz4_decoder(&head, body)?, guard),
+        Format::CompressZ => Guarded::boxed(compress_z_decoder(body)?, guard),
+        Format::Zip => {
+            // Shares the open file description with the reader just dropped,
+            // and so its offset: past the sniff, not at the start.
+            drop(body);
+            let mut file = guard.file.try_clone()?;
+            io::Seek::rewind(&mut file)?;
+            return Ok(Opened::Zip(file, guard));
+        }
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
-    })
+    };
+    Ok(Opened::Stream(stream, unverified_end))
+}
+
+/// `.Z`, through stuffr's decoder.
+///
+/// The format has no length and no checksum, so a truncated `.Z` decodes
+/// cleanly to a shorter file, wherever the cut falls: the one format here
+/// where a 1 is only as good as the file it was read from. Hence
+/// [`Outcome::unverified_end`]. stuffr's decoder is reachable
+/// only as a codec over a reader it owns, which is why a `.Z` *member* inside
+/// an archive is refused rather than decoded; see [`decode_member`].
+fn compress_z_decoder<R: Read + Send + 'static>(r: R) -> io::Result<Box<dyn stuffr_core::Source>> {
+    use stuffr_core::Codec;
+    stuffr_formats::legacy::compress_z::CompressZ
+        .decoder(Box::new(stuffr_core::ReaderSource::new(r)), &Default::default())
+        .map_err(io::Error::other)
+}
+
+/// Open `path` and hand each member to `f`, whatever kind of archive it is:
+/// a tar under any one compression, a zip, or a single compressed or plain
+/// file as one anonymous member. Never returns `Err`, for the reason
+/// [`for_each_member`] gives; a file that cannot be opened is an error on its
+/// [`Outcome`].
+pub fn walk_archive<F>(
+    path: &Path,
+    drop_cache: bool,
+    globs: Option<&crate::source::Globs>,
+    f: F,
+) -> Outcome
+where
+    F: FnMut(&str, &mut dyn Read) -> io::Result<()>,
+{
+    let mut out = match open_input(path, drop_cache) {
+        Ok(Opened::Stream(r, unverified_end)) => Outcome {
+            unverified_end,
+            ..for_each_member(r, globs, f)
+        },
+        // The guard outlives the walk, so the pages go once it is over.
+        Ok(Opened::Zip(file, _guard)) => for_each_zip_member(file, globs, f),
+        Err(e) => {
+            let mut o = Outcome::default();
+            o.errors.push(e.to_string());
+            o
+        }
+    };
+    // Named here, once, for every way a walk can fail. A sweep of a month of
+    // archives that says only "unexpected end of file" has not said which
+    // one to look at.
+    for e in &mut out.errors {
+        *e = format!("{}: {e}", path.display());
+    }
+    out
+}
+
+/// Walk a zip's members through stuffr's zip container.
+///
+/// Read from the central directory, by seeking, which is why a zip goes
+/// through here and not through the streaming path: the local headers alone
+/// can leave sizes unknown, and the directory at the end is the archive's own
+/// account of what it holds. Only a whole file can be read this way, so a zip
+/// inside another archive is searched as bytes, like any member that is not
+/// compressed text.
+///
+/// Anything stuffr reports about the archive itself — records it could not
+/// account for, such as two sharing one name — lands in `errors`, not
+/// `notes`: those are members that were not searched.
+fn for_each_zip_member<F>(file: File, globs: Option<&crate::source::Globs>, mut f: F) -> Outcome
+where
+    F: FnMut(&str, &mut dyn Read) -> io::Result<()>,
+{
+    use stuffr_core::{Container, EntryKind};
+    use stuffr_formats::zip::{Zip, ZIP};
+
+    let mut out = Outcome::default();
+    let opened = stuffr_core::FileSource::from_file(file).and_then(|src| {
+        let resolved =
+            stuffr_core::resolve(Box::new(src), ZIP, Zip.caps(), &stuffr_core::StreamPolicy::Exact)?;
+        Zip.open(resolved, &Default::default())
+    });
+    let mut archive = match opened {
+        Ok(a) => a,
+        Err(e) => {
+            out.errors.push(format!("not a readable zip: {e}"));
+            return out;
+        }
+    };
+
+    // Records stuffr failed to hand back in a row. Read by index from the
+    // central directory, each call moves on to the next record whether or not
+    // this one could be read — an encrypted member is one bad record, not the
+    // end of the archive — but that is stuffr's behaviour and not its
+    // contract, so a run of failures this long ends the walk rather than
+    // trusting it to.
+    const GIVE_UP_AFTER: usize = 1000;
+    let mut failed_in_a_row = 0;
+    let mut index = 0usize;
+    loop {
+        index += 1;
+        let mut entry = match archive.next_entry() {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => {
+                out.errors.push(format!("zip entry {index}: {e}"));
+                failed_in_a_row += 1;
+                if failed_in_a_row >= GIVE_UP_AFTER {
+                    out.errors.push(format!("gave up after {GIVE_UP_AFTER} unreadable zip entries in a row"));
+                    break;
+                }
+                continue;
+            }
+        };
+        failed_in_a_row = 0;
+        if !matches!(entry.meta().kind, EntryKind::File) {
+            continue;
+        }
+        let name = entry.meta().name.clone();
+        out.members_seen += 1;
+        if globs.is_some_and(|set| !set.is_match(&name)) {
+            continue;
+        }
+        match decode_member(&name, entry.reader(), &mut f) {
+            Ok(()) => out.members_searched += 1,
+            Err(e) => out.errors.push(format!("{name}: {e}")),
+        }
+    }
+
+    let report = archive.fidelity();
+    if report.has_warnings() {
+        out.errors.push(format!("{report:?}"));
+    }
+    out
 }
 
 /// A zstd decoder that accepts any window the format allows, up to 2^31.
@@ -218,6 +381,32 @@ fn peek<R: Read>(mut rdr: R) -> io::Result<Peeked<R>> {
     Ok((head, replay.chain(rdr)))
 }
 
+/// Hand one member to `f`, with one level of compression removed.
+///
+/// Exactly one level of nesting: logrotate puts `access.log.1.gz` inside the
+/// archive. Fixed at one level — that cap is the bomb guard. Every format is
+/// checked, because a check that named only gzip would silently hand a
+/// compressed member to the searcher as binary.
+fn decode_member<F>(name: &str, member: &mut dyn Read, f: &mut F) -> io::Result<()>
+where
+    F: FnMut(&str, &mut dyn Read) -> io::Result<()>,
+{
+    let (inner_head, mut inner) = peek(member)?;
+    match sniff(&inner_head) {
+        Format::Gzip => f(name, &mut flate2::read::MultiGzDecoder::new(&mut inner)),
+        Format::Zstd => f(name, &mut zstd_decoder(&mut inner)?),
+        Format::Xz => f(name, &mut liblzma::read::XzDecoder::new_multi_decoder(&mut inner)),
+        Format::Bzip2 => f(name, &mut bzip2::read::MultiBzDecoder::new(&mut inner)),
+        Format::Lz4 => f(name, &mut lz4_decoder(&inner_head, &mut inner)?),
+        // Searched as it is, this would be binary and skipped: a member never
+        // read, called clean. Unread is a 2.
+        Format::CompressZ => Err(io::Error::other(
+            ".Z (compress) data is read only as a whole file, not inside an archive",
+        )),
+        _ => f(name, &mut inner),
+    }
+}
+
 /// Walk every regular member, handing each to `f` as its own reader.
 ///
 /// Never returns `Err`: a failure on one member is recorded in `Outcome.errors`
@@ -287,44 +476,7 @@ where
             continue;
         }
 
-        // Exactly one level of nesting: logrotate puts access.log.1.gz inside
-        // the tgz. Fixed at one level — that cap is the bomb guard.
-        let (inner_head, mut inner) = match peek(&mut entry) {
-            Ok(v) => v,
-            Err(e) => {
-                out.errors.push(format!("{name}: {e}"));
-                continue;
-            }
-        };
-
-        // Exactly one level, and every compression format — logrotate leaves
-        // `access.log.1.gz` (or `.zst`, `.xz`, `.bz2`, `.lz4`) inside the archive, so a check that
-        // named only gzip would silently hand a compressed member to the
-        // searcher as binary.
-        let res = match sniff(&inner_head) {
-            Format::Gzip => {
-                let mut dec = flate2::read::MultiGzDecoder::new(&mut inner);
-                f(&name, &mut dec)
-            }
-            Format::Zstd => match zstd_decoder(&mut inner) {
-                Ok(mut dec) => f(&name, &mut dec),
-                Err(e) => Err(e),
-            },
-            Format::Xz => {
-                let mut dec = liblzma::read::XzDecoder::new_multi_decoder(&mut inner);
-                f(&name, &mut dec)
-            }
-            Format::Bzip2 => {
-                let mut dec = bzip2::read::MultiBzDecoder::new(&mut inner);
-                f(&name, &mut dec)
-            }
-            Format::Lz4 => match lz4_decoder(&inner_head, &mut inner) {
-                Ok(mut dec) => f(&name, &mut dec),
-                Err(e) => Err(e),
-            },
-            _ => f(&name, &mut inner),
-        };
-
+        let res = decode_member(&name, &mut entry, &mut f);
         match res {
             Ok(()) => out.members_searched += 1,
             Err(e) => out.errors.push(format!("{name}: {e}")),

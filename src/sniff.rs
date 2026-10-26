@@ -10,6 +10,9 @@ pub enum Format {
     Xz,
     Bzip2,
     Lz4,
+    /// Unix `compress`, `.Z`.
+    CompressZ,
+    Zip,
     Tar,
     Plain,
 }
@@ -53,6 +56,19 @@ fn after_skippable(head: &[u8]) -> Format {
 pub fn sniff(head: &[u8]) -> Format {
     if head.len() >= 2 && head[0] == 0x1f && head[1] == 0x8b {
         return Format::Gzip;
+    }
+    // gzip's neighbour: same first byte, and `gzip -d` reads both.
+    if head.len() >= 2 && head[0] == 0x1f && head[1] == 0x9d {
+        return Format::CompressZ;
+    }
+    // A local file header, or the end-of-central-directory record that is all
+    // an empty zip holds. "PK\x07\x08" is the marker a split archive's first
+    // segment starts with, and a single-segment one is an ordinary zip after it.
+    if head.len() >= 4
+        && head[..2] == *b"PK"
+        && matches!(head[2..4], [3, 4] | [5, 6] | [7, 8])
+    {
+        return Format::Zip;
     }
     if head.len() >= 4 && head[..4] == [0x28, 0xB5, 0x2F, 0xFD] {
         return Format::Zstd;
@@ -242,6 +258,29 @@ mod tests {
         b.resize(SNIFF_LEN, 0);
         assert_eq!(sniff(&b), Format::Zstd);
         assert_eq!(sniff(&[0x50, 0x2A, 0x4D, 0x18, 4]), Format::Zstd, "truncated length");
+    }
+
+    #[test]
+    fn detects_compress_z_from_magic() {
+        assert_eq!(sniff(&[0x1f, 0x9d, 0x90]), Format::CompressZ);
+        assert_eq!(sniff(&[0x1f]), Format::Plain);
+    }
+
+    #[test]
+    fn detects_zip_from_its_record_signatures() {
+        assert_eq!(sniff(b"PK\x03\x04\x14\x00"), Format::Zip, "local file header");
+        assert_eq!(sniff(b"PK\x05\x06\x00\x00"), Format::Zip, "empty zip");
+        assert_eq!(sniff(b"PK\x07\x08PK\x03\x04"), Format::Zip, "split marker");
+        assert_eq!(sniff(b"PK is a log line\n"), Format::Plain);
+        assert_eq!(sniff(b"PK\x01\x02"), Format::Plain, "a central record does not start a file");
+    }
+
+    #[test]
+    fn zip_wins_over_a_coincidental_ustar() {
+        let mut b = vec![0u8; 512];
+        b[..4].copy_from_slice(b"PK\x03\x04");
+        b[257..262].copy_from_slice(b"ustar");
+        assert_eq!(sniff(&b), Format::Zip);
     }
 
     #[test]

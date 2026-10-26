@@ -1,9 +1,8 @@
 # targrep
 
 `targrep` — run as `trg` — searches inside compressed log archives (`.tgz`,
-`.tar.zst`, `.tar.xz`, `.tar.bz2` and `.tar.lz4`) with ripgrep's flags,
-per-member line numbers, and without
-trashing the page cache of the server you are searching on.
+`.tar.zst`, `.tar.xz`, `.tar.bz2`, `.tar.lz4`, `.tar.Z` and `.zip`) with
+ripgrep's flags, per-member line numbers, and without trashing the page cache of the server you are searching on.
 
 ```console
 $ trg -i 'timeout' /var/log/archive/
@@ -72,6 +71,10 @@ disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
 - Compression detected from content, not the filename: gzip, zstd, xz, bzip2
   and lz4, each unwrapped one level, so a logrotate'd `access.log.1.gz`,
   `.zst`, `.xz`, `.bz2` or `.lz4` *inside* an archive is searched as text.
+- `.zip` archives, searched member by member like a tar, and Unix
+  `compress` (`.Z`), both through the
+  [stuffr](https://github.com/codedeviate/stuffr) crates. A `.Z` is read only
+  as a whole file, not as a member inside an archive.
 - ripgrep's flag names wherever the job is the same (`-i`, `-w`, `-F`, `-v`,
   `-C`, `-o`, `-c`, `-l`, `-q`, `--json`, …). `-g` filters *members* inside
   archives, `--archive-glob` filters the archives a directory walk finds, and
@@ -169,6 +172,14 @@ Run `trg --help` for every option, including `-j`, `--nice`,
 
 A `1` is a claim that the logs are clean, so `trg` only gives one when it read
 everything. Never trust a `1` you did not get.
+
+One format cannot back that claim fully: `.Z` records neither its length
+nor a checksum, so a truncated `.Z` decodes cleanly to a shorter file. Cut at
+every seventh byte, all 7,786 truncations of a 54 KB `.Z` read without an
+error. A `.Z` with no match is therefore still a `1`, but it comes with a
+note on stderr saying so. Every other format detects truncation.
+
+Every diagnostic from inside an archive starts with that archive's path.
 
 ## Development
 
