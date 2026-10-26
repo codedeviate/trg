@@ -9,6 +9,8 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-26
+
 ### Added
 
 - `.zip` archives, through the `stuffr-formats` crate's zip container. A
@@ -291,7 +293,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/codedeviate/trg/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/codedeviate/trg/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/codedeviate/trg/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/codedeviate/trg/compare/v0.7.1...v0.7.2
