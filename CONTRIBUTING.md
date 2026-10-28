@@ -49,7 +49,8 @@ To release:
 2. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh,
    empty `## [Unreleased]` above it, and update the compare links at the
    bottom of the file.
-3. Set `version` in `Cargo.toml` (and let `Cargo.lock` follow).
+3. Set `version` in `Cargo.toml` (and let `Cargo.lock` follow), and in the
+   download example in `README.md`.
 4. Commit as `chore(release): X.Y.Z` and tag `vX.Y.Z`.
 5. Push `master` and the tag. The tag push runs
    `.github/workflows/release.yml`, which creates the GitHub release

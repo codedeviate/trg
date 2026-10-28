@@ -39,7 +39,7 @@ OUTPUT (same meaning as ripgrep):
     -o, --only-matching   print only the matching part
     -c, --count           print a count per member
     -l, --files-with-matches
-                          print member paths only
+                          print archive:member paths only
     -q, --quiet           print nothing; exit code only
         --json            JSON Lines output
         --color WHEN      auto | always | never (auto: only on a tty)
@@ -47,8 +47,9 @@ OUTPUT (same meaning as ripgrep):
                           text (\\x1b) instead of sending them to the
                           terminal: auto | always | never (auto: on a tty,
                           per stream; piped output stays byte-exact)
-                          If several output modes are given, the most
-                          suppressive wins: -q, then -l, then -c, then --json.
+
+    If several output modes are given, the most suppressive wins: -q, then
+    -l, then -c, then --json.
 
 ARCHIVES:
     -g, --glob PAT        filter MEMBERS inside archives; repeatable. Without
@@ -69,7 +70,8 @@ ARCHIVES:
 
 RESOURCES:
     -j, --jobs NUM        archives searched concurrently (default 1)
-        --turbo           -j <ncpus> --nice 0
+        --turbo           -j <ncpus> --nice 0; I/O stays idle and the cache
+                          is still dropped
         --nice NUM        scheduling priority (default 10)
         --no-nice         do not lower priority
         --no-drop-cache   keep archive pages in the page cache
@@ -92,8 +94,10 @@ NOTES (documented, and surprising the first time):
     Two directories symlinking the same file search it once (identity dedup).
     An intact archive behind a corrupt gzip trailer is a 0; truncation is
       still caught and is a 2.
-    --turbo's ordered output is not bounded by the spill cap; peak RSS grows
-      with the match volume held in order.
+    With -j above 1, results wait so they come out in order. Once more than
+      64 MB is waiting, trg writes it out of order, with a note on stderr.
+      Memory can still peak well above 64 MB: archives being searched are not
+      counted.
     On a broken pipe (`| head`) trg stops early and exits 0, leaving later
       archives unread.
     Compression is detected from content, never from the filename, so there is

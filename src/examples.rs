@@ -445,9 +445,9 @@ pub const SECTIONS: &[Section] = &[
     },
     Section {
         title: "BIG SWEEPS AND BUSY SERVERS",
-        intro: "By default trg reads one archive at a time at nice 10, and drops \
-                each archive from the page cache once it is read, so a sweep \
-                does not push the server's own data out of memory.",
+        intro: "By default trg reads one archive at a time at nice 10 and idle I/O \
+                priority, and drops each archive from the page cache once it is \
+                read, so a sweep does not push the server's own data out of memory.",
         examples: &[
             Example {
                 cmd: "trg -j 4 ' 500 ' logs/",
@@ -458,7 +458,8 @@ pub const SECTIONS: &[Section] = &[
                 cmd: "trg --turbo -c ' 500 ' logs/",
                 exit: 0,
                 says: "One job per CPU at normal priority: for a machine that is yours \
-                       alone. -j after --turbo still sets the job count.",
+                       alone. Reads stay at idle I/O priority and the page cache is \
+                       still dropped. -j still sets the job count.",
             },
             Example {
                 cmd: "trg -j 8 --load-limit 6 ' 500 ' logs/",

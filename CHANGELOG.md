@@ -20,6 +20,15 @@ How versions are chosen before 1.0.0 is described in
   script on every push, so a new dependency without a licence file fails
   there.
 
+### Fixed
+
+- Documentation that said more than trg does. `--turbo` raises the job count
+  and the priority and nothing else: reads stay at idle I/O priority and
+  archives still leave the page cache, which the README said it lifted too.
+  `--help` now says that `-l` prints `archive:member` and what happens when
+  ordered output backs up, instead of naming an internal "spill cap". The
+  README's download example pointed at 0.5.0.
+
 ## [0.11.0] - 2026-10-28
 
 ### Added

@@ -2,7 +2,8 @@
 
 `targrep` — run as `trg` — searches inside compressed log archives (`.tgz`,
 `.tar.zst`, `.tar.xz`, `.tar.bz2`, `.tar.lz4`, `.tar.Z` and `.zip`) with
-ripgrep's flags, per-member line numbers, and without trashing the page cache of the server you are searching on.
+ripgrep's flags, per-member line numbers, and without trashing the page cache
+of the server you are searching on.
 
 ```console
 $ trg -i 'timeout' /var/log/archive/
@@ -80,8 +81,9 @@ disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
   archives, `--archive-glob` filters the archives a directory walk finds, and
   both take ripgrep's `!` exclusions (`-g '!*.error.log'`).
 - Polite by default: `nice 10`, idle I/O priority, one archive at a time, and
-  no page-cache footprint. `--turbo` lifts all of that when you need the answer
-  now.
+  no page-cache footprint. `--turbo` runs one archive per CPU at normal
+  priority when you need the answer now; reads stay at idle I/O priority and
+  archives still leave the page cache (`--no-drop-cache` keeps them).
 - An exit code you can trust (below).
 - Safe to read on a terminal: log lines and member names are written by
   whoever sent the request, so on a tty their control bytes are shown as text
@@ -124,8 +126,9 @@ Every [GitHub release](https://github.com/codedeviate/trg/releases) has
 prebuilt binaries for x86_64 and aarch64, each with a `.sha256`:
 
 ```sh
-curl -LO https://github.com/codedeviate/trg/releases/download/v0.5.0/trg-0.5.0-x86_64-linux.tar.gz
-tar -xzf trg-0.5.0-x86_64-linux.tar.gz   # trg-0.5.0-x86_64-linux/trg
+v=0.11.1   # or whichever release you want
+curl -LO https://github.com/codedeviate/trg/releases/download/v$v/trg-$v-x86_64-linux.tar.gz
+tar -xzf trg-$v-x86_64-linux.tar.gz   # trg-$v-x86_64-linux/trg, with LICENSE and THIRD-PARTY.md
 ```
 
 To build one yourself, from macOS or any other host, with `cargo-zigbuild`,
