@@ -50,12 +50,18 @@ pub fn build_matcher(
     pats: &[String],
     o: &SearchOpts,
 ) -> anyhow::Result<grep_regex::RegexMatcher> {
+    // Built as ripgrep builds it: multi-line, so `^` and `$` hold at every line
+    // and not only at the edges of whatever buffer the searcher hands over,
+    // with `\n` as the line terminator so no match can span two lines. Built
+    // single-line, `-o '^[0-9.]+'` matched the first line and printed every
+    // later hit whole.
     let mut b = grep_regex::RegexMatcherBuilder::new();
     b.case_insensitive(o.case_insensitive)
         .case_smart(o.smart_case)
         .word(o.word)
         .fixed_strings(o.fixed)
-        .multi_line(false)
+        .multi_line(true)
+        .line_terminator(Some(b'\n'))
         .crlf(o.crlf);
     Ok(b.build_many(pats)?)
 }

@@ -5,9 +5,11 @@ use std::process::Command;
 /// The primary oracle. Extract every member, run `rg` on each one
 /// individually, and require trg's output to agree member-for-member and
 /// line-for-line. This is what validates "every member is its own stream".
-fn rg_ground_truth(dir: &std::path::Path, pattern: &str) -> Vec<String> {
+fn rg_ground_truth(dir: &std::path::Path, flags: &[&str], pattern: &str) -> Vec<String> {
     let out = Command::new("rg")
-        .args(["--no-heading", "-n", "--color", "never", "--sort", "path", pattern, "."])
+        .args(["--no-heading", "-n", "--color", "never", "--sort", "path"])
+        .args(flags)
+        .args([pattern, "."])
         .current_dir(dir)
         .output()
         .expect("rg must be installed to run the differential oracle");
@@ -18,6 +20,11 @@ fn rg_ground_truth(dir: &std::path::Path, pattern: &str) -> Vec<String> {
 }
 
 fn body(members: &[(&str, &[u8])], pattern: &str) {
+    body_with(members, &[], pattern)
+}
+
+/// `body`, with the same extra `flags` given to both rg and trg.
+fn body_with(members: &[(&str, &[u8])], flags: &[&str], pattern: &str) {
     let f = helpers::tgz("d.tgz", members);
 
     // ground truth: extract, then rg each member
@@ -26,10 +33,11 @@ fn body(members: &[(&str, &[u8])], pattern: &str) {
         .args(["xzf", f.path.to_str().unwrap(), "-C", ex.path().to_str().unwrap()])
         .status().unwrap();
     assert!(status.success());
-    let mut want = rg_ground_truth(ex.path(), pattern);
+    let mut want = rg_ground_truth(ex.path(), flags, pattern);
 
     // trg, with the archive prefix stripped so the two are comparable
     let out = Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(flags)
         .args([pattern, f.path.to_str().unwrap()])
         .output().unwrap();
     let prefix = format!("{}:", f.path.display());
@@ -153,4 +161,19 @@ fn output_path_is_archive_then_member() {
     let s = String::from_utf8_lossy(&out.stdout);
     let want = format!("{}:logs/vhost03.access.log:1:NEEDLE", f.path.display());
     assert!(s.contains(&want), "got: {s}");
+}
+
+/// `-o` prints each match on its own, and an anchor must hold at every line,
+/// not only at the start of the buffer the searcher happens to hand over. The
+/// matcher was built single-line, so `^` matched on a member's first line and
+/// `-o` printed every later hit as the whole line.
+#[test]
+fn only_matching_agrees_with_rg_on_anchored_patterns() {
+    let members: &[(&str, &[u8])] = &[(
+        "logs/access.log",
+        b"10.0.0.7 - GET /\n192.168.1.20 - GET /a\nnot an ip\n203.0.113.9 - GET /b\n",
+    )];
+    body_with(members, &["-o"], "^[0-9.]+");
+    body_with(members, &["-o"], "[a-z/]+$");
+    body_with(members, &["-o", "-i"], "^[0-9]+\\.[0-9]+");
 }
