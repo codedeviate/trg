@@ -42,6 +42,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The release puts this in every tarball. Run it here too, so a new
+      # dependency without a licence file fails a push, not a release.
+      - name: Third-party notices
+        if: runner.os == 'Linux'
+        run: scripts/third-party.py > /dev/null
+
   msrv:
     # Must match `rust-version` in Cargo.toml. A build with the committed
     # Cargo.lock, so it fails when a dependency update needs a newer compiler.

@@ -119,6 +119,8 @@ jobs:
           mkdir -p "pkg/$name"
           cp "dist/$name" "pkg/$name/trg"
           cp LICENSE README.md CHANGELOG.md "pkg/$name/"
+          # The licence notices of everything compiled into the binary.
+          scripts/third-party.py ${{ matrix.arch }}-unknown-linux-gnu > "pkg/$name/THIRD-PARTY.md"
           tar -czf "$name.tar.gz" -C pkg "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
 

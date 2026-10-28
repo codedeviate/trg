@@ -140,6 +140,11 @@ The binary depends on nothing but glibc 2.17 or newer, so it runs on any
 current Debian, Ubuntu or RHEL. Copy it over with `scp` and put it on the
 `PATH` as `trg`.
 
+Each tarball has a `THIRD-PARTY.md` with the licence notices of everything
+compiled into the binary: the Rust crates, the bundled zstd, zlib-ng and
+liblzma C code, and the Rust standard library. Keep it with the binary if you
+pass the binary on. `scripts/third-party.py` writes it.
+
 ## Usage
 
 ```sh

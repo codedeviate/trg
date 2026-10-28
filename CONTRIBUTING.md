@@ -85,6 +85,16 @@ TRG_EXAMPLES_TREE=/tmp/ex cargo test --test examples -- --ignored
 cd /tmp/ex && trg --examples
 ```
 
+## Third-party notices
+
+The release tarballs include `THIRD-PARTY.md`, written by
+`scripts/third-party.py` from `Cargo.lock`. It copies each linked crate's own
+licence files, the licences of the C libraries bundled in `zstd-sys`,
+`libz-ng-sys` and `liblzma-sys`, and the Rust standard library's notice. CI runs
+the script on every push. It fails when a linked crate has no licence file,
+and when a crate that links native code (one with a `links` key) has no entry
+in its `BUNDLED_C` table, which names the bundled library's licence files.
+
 ## Scope
 
 Before proposing a feature, check [OUT-OF-SCOPE.md](OUT-OF-SCOPE.md). Items

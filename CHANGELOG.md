@@ -9,6 +9,15 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- The release tarballs carry a `THIRD-PARTY.md` with the licence notices of
+  everything compiled into the binary, as several of those licences require
+  (Info-ZIP, bzip2, the BSD-licensed zstd, among others). It is generated at
+  release time by `scripts/third-party.py` from `Cargo.lock`, and CI runs the
+  script on every push, so a new dependency without a licence file fails
+  there.
+
 ## [0.11.0] - 2026-10-28
 
 ### Added
