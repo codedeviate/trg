@@ -9,6 +9,21 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- `--examples`: worked examples of every option, from a first search to
+  scripts, recipes and busy-server settings, all against one example tree of
+  archives. It is living documentation: a test builds that tree, runs every
+  example and checks the exit code each one claims, and fails when an option
+  in `--help` has no example.
+
+### Fixed
+
+- `-o` with an anchored pattern (`^`, `$`) printed the first line's match and
+  then every later hit as the whole line. The matcher was built single-line,
+  so `^` held only at the start of the buffer; it is now built as ripgrep
+  builds it, and a differential test against `rg -o` covers it.
+
 ## [0.10.0] - 2026-10-26
 
 ### Added

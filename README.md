@@ -160,7 +160,10 @@ trg --turbo -c ' 500 ' /var/log/archive/
 ```
 
 Run `trg --help` for every option, including `-j`, `--nice`,
-`--no-drop-cache` and `--load-limit`.
+`--no-drop-cache` and `--load-limit`, and `trg --examples` for worked
+examples of all of them: patterns, member and archive globs, output modes,
+every format, exit codes in scripts, and recipes such as the top client IPs
+across a month of archives.
 
 ### Exit codes
 

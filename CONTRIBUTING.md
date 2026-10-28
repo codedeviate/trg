@@ -66,6 +66,25 @@ To release:
    `brew test` and `brew audit --strict` before pushing (see that repo's
    `CLAUDE.md`).
 
+## Examples
+
+`trg --examples` is living documentation: it must describe the version that
+prints it. Every user-visible change updates `src/examples.rs` in the same
+commit — a new flag gets an example, a changed behaviour gets its examples
+rewritten, a new format or recipe gets added.
+
+`tests/examples.rs` holds you to most of this. It builds the tree the
+examples search, runs the trg part of every example in it, and checks the
+exit code each one claims. It fails when an option in `--help` has no
+example, and when a line is over 80 columns. What it cannot check is that
+the prose is still true, so read the examples you touched against what trg
+prints. To get the tree on disk:
+
+```sh
+TRG_EXAMPLES_TREE=/tmp/ex cargo test --test examples -- --ignored
+cd /tmp/ex && trg --examples
+```
+
 ## Scope
 
 Before proposing a feature, check [OUT-OF-SCOPE.md](OUT-OF-SCOPE.md). Items

@@ -77,6 +77,8 @@ RESOURCES:
                           from other processes exceeds N, and add jobs back
                           as it falls. Rechecked every 5 s
 
+        --examples        worked examples of every option; try
+                          `trg --examples | less`
     -h, --help            this message
     -V, --version         version
 
@@ -302,6 +304,10 @@ where
 
             Short('h') | Long("help") => {
                 print!("{HELP}");
+                std::process::exit(0);
+            }
+            Long("examples") => {
+                print!("{}", crate::examples::render());
                 std::process::exit(0);
             }
             Short('V') | Long("version") => {
