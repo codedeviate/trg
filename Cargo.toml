@@ -44,7 +44,7 @@ stuffr-core = "0.18.2"
 stuffr-formats = { version = "0.18.2", default-features = false, features = ["zip", "compress"] }
 tar = "0.4.46"
 termcolor = "1.4.1"
-zstd = "0.13.3"
+zstd = "0.14.3"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
@@ -53,7 +53,7 @@ liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 tar = "0.4.46"
 tempfile = "3.27.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2", "bzip2"] }
-zstd = "0.13.3"
+zstd = "0.14.3"
 
 [features]
 # zlib-ng by default: measured on Linux/aarch64 over the 11.5 GB benchmark

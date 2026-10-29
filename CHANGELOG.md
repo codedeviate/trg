@@ -9,6 +9,15 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Security
+
+- `zstd` 0.13 → 0.14.3 (zstd-safe 8.2.0, zstd-sys 2.1.2), which fixes
+  RUSTSEC-2026-0391 and RUSTSEC-2026-0395 to -0406 and -0410. None of them
+  reached trg: it decodes only through `zstd::stream::read::Decoder::new`,
+  and the advisories are in context reuse, `Seekable`, dictionaries,
+  encoders, the writer decoder and the WebAssembly allocator. The upgrade
+  takes them out of the build so advisory scanners stop flagging trg.
+
 ## [0.11.1] - 2026-10-28
 
 ### Added
