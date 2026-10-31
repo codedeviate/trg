@@ -127,7 +127,7 @@ Every [GitHub release](https://github.com/codedeviate/trg/releases) has
 prebuilt binaries for x86_64 and aarch64, each with a `.sha256`:
 
 ```sh
-v=0.11.1   # or whichever release you want
+v=0.12.0   # or whichever release you want
 curl -LO https://github.com/codedeviate/trg/releases/download/v$v/trg-$v-x86_64-linux.tar.gz
 tar -xzf trg-$v-x86_64-linux.tar.gz   # trg-$v-x86_64-linux/trg, with LICENSE and THIRD-PARTY.md
 ```

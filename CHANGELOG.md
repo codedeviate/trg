@@ -9,6 +9,8 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-31
+
 ### Added
 
 - A `.Z` (Unix `compress`) member inside an archive, such as a log rotated
@@ -355,7 +357,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/codedeviate/trg/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/codedeviate/trg/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/codedeviate/trg/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/codedeviate/trg/compare/v0.9.0...v0.10.0
