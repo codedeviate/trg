@@ -9,6 +9,32 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a corrupt archive is now an exit 2 wherever its format can
+  tell. trg stopped reading at the tar's end-of-archive blocks, so the gzip,
+  bzip2 and lz4 checksums after them were never checked, and it stopped
+  reading a member at its first NUL, short of that member's own checksum. A
+  corrupt `.tgz` could come back a 0 with shifted line numbers, or a 1. In a
+  sweep of one flipped byte at random places, 36% of `.tgz`, 24% of
+  `.tar.bz2` and 15% of `.tar.lz4` cases were a silent 1 or a 0; now every
+  one is a 2. A corrupt gzip trailer, documented as a 0, is a 2 too. Reading
+  on stops where there is no checksum: a plain stream such as `/dev/zero`
+  still stops at its first NUL. Found by a torture run.
+
+### Fixed
+
+- An `.lz4` cut off between two blocks decoded cleanly to a shorter file, a
+  1 about data never read. lz4_flex takes the end of its input where a block
+  size should be for the end of the stream; trg now follows the frame
+  structure itself and makes that a 2.
+- `-m` behaves as in rg: the after-context of the last allowed match is
+  printed, `-v -m N` no longer prints an extra line when the last line has no
+  newline, and `-m 0` prints nothing and exits 1 instead of printing a match.
+- `-A` and `-B` win over `-C` whichever comes first, and the last of `-i` and
+  `-S` wins, as in rg.
+- `-c -o` counts matches, not matching lines, as in rg.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added

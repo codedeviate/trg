@@ -78,7 +78,8 @@ fn build_tree() -> tempfile::TempDir {
         ("app/server.log", b"2026-08-24T10:00:01Z WARN  started with --dry-run\n\
             2026-08-24T10:00:02Z ERROR order=4711 payment declined: card expired\n\
             2026-08-24T10:00:03Z WARN  retrying order=4711 (attempt 2)\n\
-            2026-08-24T10:00:09Z INFO  order=4712 paid\n"),
+            2026-08-24T10:00:09Z INFO  order=4712 paid\n\
+            2026-08-24T10:00:10Z INFO  order=4713 merged into order=4712\n"),
         ("app/worker.log", b"2026-08-24T10:00:04Z INFO  job 47110 done\n\
             2026-08-24T10:00:05Z ERROR job 47111 failed: Timeout talking to smtp\n"),
     ], helpers::ZipMethod::Deflated));

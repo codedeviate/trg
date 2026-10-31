@@ -105,6 +105,8 @@ pub fn build<'a>(o: &PrintOpts, buf: &'a mut Buffer) -> Printer<'a> {
         // member after the first match purely to compute numbers nobody reads.
         Mode::Count | Mode::FilesWithMatches | Mode::Quiet => {
             let kind = match o.mode {
+                // As in rg, `-c -o` counts every match, not matching lines.
+                Mode::Count if o.only_matching => SummaryKind::CountMatches,
                 Mode::Count => SummaryKind::Count,
                 Mode::FilesWithMatches => SummaryKind::PathWithMatch,
                 _ => SummaryKind::QuietWithMatch,

@@ -72,6 +72,10 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
         .before_context(o.before)
         .after_context(o.after)
         .invert_match(o.invert)
+        // `-m`, enforced by the searcher as in rg: it stops after the limit
+        // but still prints the after-context of the last match, and it counts
+        // inverted matches right (`-v -m`).
+        .max_matches(o.max_count)
         .heap_limit(Some(o.heap_limit))
         .binary_detection(if o.text {
             BinaryDetection::none()
@@ -84,19 +88,20 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
     b.build()
 }
 
-/// `-m/--max-count`. `StandardBuilder` has no `max_matches`, so the limit is
-/// enforced by wrapping the printer's sink and returning `Ok(false)` from
-/// `matched`, which stops the search.
+/// Wraps the printer's sink to record what the searcher reported, which is
+/// the exit code's source of truth. Named for the `-m` limit it used to
+/// enforce; `SearcherBuilder::max_matches` does that now, as in rg, because
+/// stopping the search from the sink cut off `-m`'s after-context and let
+/// `-v -m` print a line past the limit.
 pub struct MaxCount<S> {
     inner: S,
-    limit: Option<u64>,
     seen: u64,
     binary_at: Option<u64>,
 }
 
 impl<S: Sink> MaxCount<S> {
-    pub fn new(inner: S, limit: Option<u64>) -> Self {
-        Self { inner, limit, seen: 0, binary_at: None }
+    pub fn new(inner: S) -> Self {
+        Self { inner, seen: 0, binary_at: None }
     }
 
     /// Whether the searcher reported any match at all for this member.
@@ -139,16 +144,9 @@ impl<S: Sink> Sink for MaxCount<S> {
         //
         // Counting first makes `seen` the record of what the *searcher*
         // reported, which no printer can overrule and no early stop can
-        // truncate. The `-m` limit is unaffected: when the inner sink stops the
-        // search, its own count no longer decides anything.
+        // truncate.
         self.seen += 1;
-        if !self.inner.matched(s, m)? {
-            return Ok(false);
-        }
-        Ok(match self.limit {
-            Some(n) => self.seen < n,
-            None => true,
-        })
+        self.inner.matched(s, m)
     }
 
     fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> Result<bool, S::Error> {
@@ -200,7 +198,6 @@ pub struct SearchCtx<'a> {
     pub matcher: &'a grep_regex::RegexMatcher,
     pub sep: char,
     pub globs: Option<&'a crate::source::Globs>,
-    pub max_count: Option<u64>,
     /// A request, not a decision: `walk_archive` narrows it to
     /// archives, so a plain live logfile is never evicted.
     pub drop_cache: bool,
@@ -244,7 +241,6 @@ fn search_member(
     s: &mut Searcher,
     r: &mut dyn io::Read,
     display: &str,
-    max_count: Option<u64>,
 ) -> io::Result<MemberVerdict> {
     // The three printers have unrelated sink types, so the body is monomorphic
     // per arm; a macro keeps the one real sequence — build sink, cap it,
@@ -252,7 +248,7 @@ fn search_member(
     macro_rules! run {
         ($p:expr) => {{
             let sink = $p.sink_with_path(m, display);
-            let mut capped = MaxCount::new(sink, max_count);
+            let mut capped = MaxCount::new(sink);
             let res = s.search_reader(m, r, &mut capped);
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
@@ -278,16 +274,16 @@ pub fn search_archive(
     s: &mut Searcher,
     printer: &mut crate::print::Printer<'_>,
 ) -> crate::archive::Outcome {
-    let (m, sep, globs, max_count) = (ctx.matcher, ctx.sep, ctx.globs, ctx.max_count);
+    let (m, sep, globs) = (ctx.matcher, ctx.sep, ctx.globs);
 
     let mut matched = false;
     let mut notes: Vec<String> = Vec::new();
     let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
         if excluded_plain_file(member, path, globs) {
-            return Ok(());
+            return Ok(crate::archive::Rest::Leave);
         }
         let display = display_path(path, member, sep);
-        let v = search_member(printer, m, s, r, &display, max_count)?;
+        let v = search_member(printer, m, s, r, &display)?;
         matched |= v.matched;
         // `-c` is otherwise the only mode that goes completely silent on a
         // member that matched and then hit binary data: stdout stays empty and
@@ -299,7 +295,9 @@ pub fn search_archive(
         if ctx.count_mode && v.count_suppressed {
             notes.push(format!("{display}: binary data; count suppressed"));
         }
-        Ok(())
+        // A member that matched is a 0 either way, so `-q`, `-l` and `-m`
+        // keep stopping early; one that did not must be read to its end.
+        Ok(if v.matched { crate::archive::Rest::Leave } else { crate::archive::Rest::Verify })
     });
     // A note, not an error: nothing is known to be missing, and the format
     // offers no way to find out. But a 1 is someone's "the logs are clean",
@@ -341,10 +339,11 @@ pub fn list_members(
     let mut listed = false;
     let mut outcome = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, _| {
         if excluded_plain_file(member, path, globs) {
-            return Ok(());
+            return Ok(crate::archive::Rest::Leave);
         }
         listed = true;
-        writeln!(out, "{}", display_path(path, member, sep))
+        writeln!(out, "{}", display_path(path, member, sep))?;
+        Ok(crate::archive::Rest::Leave)
     });
     // `-T` has no notion of a match, so "listed something" is what stands in
     // for it: `trg -T ... ; echo $?` should say 1 when an archive held nothing

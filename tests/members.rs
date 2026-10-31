@@ -9,7 +9,7 @@ fn collect(path: &std::path::Path) -> (Vec<String>, Vec<String>) {
         let mut s = String::new();
         r.read_to_string(&mut s).ok();
         names.push(format!("{name}={}", s.trim_end()));
-        Ok(())
+        Ok(trg::archive::Rest::Leave)
     });
     (names, out.errors)
 }
@@ -71,7 +71,7 @@ fn plain_file_is_one_anonymous_member() {
         let mut s = String::new();
         r.read_to_string(&mut s).ok();
         got.push((name.to_string(), s));
-        Ok(())
+        Ok(trg::archive::Rest::Leave)
     });
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].0, "", "a plain file has no member name");
@@ -91,7 +91,7 @@ fn truncated_archive_records_an_error_but_keeps_earlier_members() {
         let mut sink = Vec::new();
         std::io::copy(&mut r.take(64), &mut sink)?;
         names.push(name.to_string());
-        Ok(())
+        Ok(trg::archive::Rest::Leave)
     });
     assert!(names.iter().any(|n| n == "logs/first.log"),
             "must keep members read before the truncation: {names:?}");
@@ -110,7 +110,7 @@ fn member_globs_filter_which_members_are_searched() {
     let mut names = Vec::new();
     trg::archive::for_each_member(rdr, Some(&set), |name, _| {
         names.push(name.to_string());
-        Ok(())
+        Ok(trg::archive::Rest::Leave)
     });
     assert_eq!(names, vec!["logs/a.access.log"]);
 }

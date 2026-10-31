@@ -2,6 +2,7 @@ pub mod archive;
 pub mod cli;
 pub mod escape;
 pub mod examples;
+mod lz4_track;
 pub mod print;
 pub mod resource;
 pub mod sched;

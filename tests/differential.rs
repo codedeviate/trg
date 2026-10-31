@@ -177,3 +177,39 @@ fn only_matching_agrees_with_rg_on_anchored_patterns() {
     body_with(members, &["-o"], "[a-z/]+$");
     body_with(members, &["-o", "-i"], "^[0-9]+\\.[0-9]+");
 }
+
+/// `-m` is the searcher's limit, as in rg: the after-context of the last
+/// allowed match is still printed, and `-v -m` stops at the limit even when
+/// the last line has no newline.
+#[test]
+fn max_count_agrees_with_rg() {
+    // One member per call: rg puts a `--` between files' context groups,
+    // which trg does not print between members.
+    let a: &[(&str, &[u8])] = &[("logs/a.log", b"one NEEDLE\ntwo\nthree NEEDLE\nfour\nfive\nsix NEEDLE\nseven\n")];
+    let b: &[(&str, &[u8])] = &[("logs/b.log", b"a\nNEEDLE\nb\nc\nd")];
+    for members in [a, b] {
+        body_with(members, &["-m", "2", "-A", "2"], "NEEDLE");
+        body_with(members, &["-m", "1", "-C", "1"], "NEEDLE");
+        body_with(members, &["-v", "-m", "2"], "NEEDLE");
+        body_with(members, &["-m", "0"], "NEEDLE");
+    }
+}
+
+/// rg's flag precedence: `-A`/`-B` win over `-C` in either order, and the
+/// last of `-i` and `-S` wins.
+#[test]
+fn flag_precedence_agrees_with_rg() {
+    let members: &[(&str, &[u8])] = &[("logs/a.log", b"1\n2\n3\nNEEDLE\n5\n6\n7\nneedle\n9\n")];
+    body_with(members, &["-A", "2", "-C", "1"], "NEEDLE");
+    body_with(members, &["-C", "1", "-B", "3"], "NEEDLE");
+    body_with(members, &["-i", "-S"], "NEEDLE");
+    body_with(members, &["-S", "-i"], "NEEDLE");
+}
+
+/// With `-o`, `-c` counts matches rather than matching lines, as in rg.
+#[test]
+fn count_only_matching_agrees_with_rg() {
+    let members: &[(&str, &[u8])] = &[("logs/a.log", b"GET GET x\nGET\nnone\n")];
+    body_with(members, &["-c", "-o"], "GET");
+    body_with(members, &["-c"], "GET");
+}

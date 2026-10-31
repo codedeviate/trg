@@ -316,6 +316,12 @@ pub const SECTIONS: &[Section] = &[
                        archive:member:count.",
             },
             Example {
+                cmd: "trg -c -o 'order=[0-9]+' logs/app-2026-08-24.zip",
+                exit: 0,
+                says: "With -o, -c counts every match rather than every matching line, \
+                       as rg does: a line naming two orders counts twice.",
+            },
+            Example {
                 cmd: "trg -l 'sqlmap' logs/",
                 exit: 0,
                 says: "Only the archive:member names that have a hit.",
@@ -325,6 +331,12 @@ pub const SECTIONS: &[Section] = &[
                 exit: 0,
                 says: "Stop after the first hit in each member: was it there at all, \
                        and where did it start?",
+            },
+            Example {
+                cmd: "trg -m 1 -A 2 'payment declined' logs/app-2026-08-24.zip",
+                exit: 0,
+                says: "The lines after the last allowed hit are still printed, as in \
+                       rg. -A and -B win over -C whichever comes first.",
             },
             Example {
                 cmd: "trg -o -N '^[0-9.]+' -g 'access.log*' logs/ |\n  \
@@ -433,7 +445,8 @@ pub const SECTIONS: &[Section] = &[
                 exit: 2,
                 says: "A truncated archive: the hits before the damage are printed, the \
                        error goes to stderr with the archive's name, and the exit code \
-                       is 2.",
+                       is 2. Every checksum the format carries is read, the ones after \
+                       the tar's end included, so a corrupted archive is a 2 as well.",
             },
             Example {
                 cmd: "trg ' 500 ' logs/ broken/",

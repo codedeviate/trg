@@ -183,6 +183,19 @@ fn max_count_stops_per_member() {
     assert_eq!(out.lines().count(), 2, "expected exactly 2 lines, got: {out}");
 }
 
+/// As in rg, `-m 0` allows no matches at all: nothing printed, exit 1.
+#[test]
+fn max_count_zero_matches_nothing() {
+    let f = helpers::tgz("m.tgz", &[("logs/a.log", b"NEEDLE\nNEEDLE\n")]);
+    for mode in [&[][..], &["-c"], &["-l"], &["--json"]] {
+        let mut args = mode.to_vec();
+        args.extend(["-m", "0", "NEEDLE", f.path.to_str().unwrap()]);
+        let (out, err, c) = run(&args);
+        assert_eq!(out, "", "{mode:?}: {err}");
+        assert_eq!(c, Some(1), "{mode:?}: {err}");
+    }
+}
+
 #[test]
 fn archive_sep_changes_the_separator() {
     let f = helpers::tgz("s.tgz", &[("logs/a.log", b"NEEDLE\n")]);

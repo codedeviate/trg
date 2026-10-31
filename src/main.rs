@@ -103,7 +103,6 @@ fn run() -> anyhow::Result<RunStatus> {
         matcher: &matcher,
         sep: args.archive_sep,
         globs: globs.as_ref(),
-        max_count: args.search.max_count,
         drop_cache: args.drop_cache,
         count_mode: args.print.mode == print::Mode::Count,
     };

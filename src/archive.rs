@@ -123,7 +123,7 @@ pub fn open_decoded_dropping(path: &Path, drop_cache: bool) -> anyhow::Result<Bo
 /// of setting `F_NOCACHE` on a live Apache log is the trade being made.
 fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read>> {
     match open_input(path, drop_cache)? {
-        Opened::Stream(r, _) => Ok(r),
+        Opened::Stream(r, ..) => Ok(r),
         Opened::Zip(..) => anyhow::bail!("a zip is not a stream; it is read through walk_archive"),
     }
 }
@@ -131,8 +131,9 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read>> {
 /// An input, opened: a byte stream with its outer compression removed, or a
 /// zip, which is read by seeking and so cannot be one.
 enum Opened {
-    /// The stream, and whether its format can detect its own truncation.
-    Stream(Box<dyn Read>, bool),
+    /// The stream, whether its format can detect its own truncation, and
+    /// whether it is compressed (and so has a checksum to read up to).
+    Stream(Box<dyn Read>, bool, bool),
     /// The file, rewound, and the guard that drops its pages when the walk is
     /// over.
     Zip(File, CacheGuard),
@@ -174,7 +175,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
         }
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     };
-    Ok(Opened::Stream(stream, unverified_end))
+    Ok(Opened::Stream(stream, unverified_end, format != Format::Tar && format != Format::Plain))
 }
 
 /// `.Z`, through stuffr's decoder.
@@ -186,6 +187,27 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
 fn compress_z_decoder<'a, R: Read + 'a>(r: R) -> io::Result<Box<dyn stuffr_core::Source + 'a>> {
     stuffr_core::decode_reader(&stuffr_formats::legacy::compress_z::CompressZ, r, &Default::default())
         .map_err(io::Error::other)
+}
+
+/// What to do with the rest of a member once the callback is done with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rest {
+    /// Leave it: the callback has what it came for, a match or a listing.
+    Leave,
+    /// Read it to the end. A search that found nothing says this, because its
+    /// 1 claims everything was read: a member that looked binary was left at
+    /// its first NUL, short of the checksum at its end. Only data with a
+    /// checksum is read on (a decoder, a zip entry), so an endless plain
+    /// stream such as /dev/zero still stops at its first NUL.
+    Verify,
+}
+
+/// Read the rest of `r` when `rest` asks for it.
+fn finish(rest: Rest, r: &mut dyn Read) -> io::Result<()> {
+    if rest == Rest::Verify {
+        io::copy(r, &mut io::sink())?;
+    }
+    Ok(())
 }
 
 /// Open `path` and hand each member to `f`, whatever kind of archive it is:
@@ -200,12 +222,12 @@ pub fn walk_archive<F>(
     f: F,
 ) -> Outcome
 where
-    F: FnMut(&str, &mut dyn Read) -> io::Result<()>,
+    F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
     let mut out = match open_input(path, drop_cache) {
-        Ok(Opened::Stream(r, unverified_end)) => Outcome {
+        Ok(Opened::Stream(r, unverified_end, compressed)) => Outcome {
             unverified_end,
-            ..for_each_member(r, globs, f)
+            ..walk_stream(r, globs, compressed, f)
         },
         // The guard outlives the walk, so the pages go once it is over.
         Ok(Opened::Zip(file, _guard)) => for_each_zip_member(file, globs, f),
@@ -238,7 +260,7 @@ where
 /// `notes`: those are members that were not searched.
 fn for_each_zip_member<F>(file: File, globs: Option<&crate::source::Globs>, mut f: F) -> Outcome
 where
-    F: FnMut(&str, &mut dyn Read) -> io::Result<()>,
+    F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
     use stuffr_core::{Container, EntryKind};
     use stuffr_formats::zip::{Zip, ZIP};
@@ -290,7 +312,8 @@ where
         if globs.is_some_and(|set| !set.is_match(&name)) {
             continue;
         }
-        match decode_member(&name, entry.reader(), &mut f) {
+        // A zip entry carries its own CRC-32, stored or not, checked at its end.
+        match decode_member(&name, entry.reader(), &mut f).and_then(|rest| finish(rest, entry.reader())) {
             Ok(()) => out.members_searched += 1,
             Err(e) => out.errors.push(format!("{name}: {e}")),
         }
@@ -331,7 +354,7 @@ fn zstd_decoder<'a, R: Read>(r: R) -> io::Result<zstd::stream::read::Decoder<'a,
 fn lz4_decoder<R: Read>(head: &[u8], mut r: R) -> io::Result<Lz4Frames<R>> {
     let skip = crate::sniff::skippable_prefix(head).unwrap_or(0) as u64;
     io::copy(&mut (&mut r).take(skip), &mut io::sink())?;
-    Ok(Lz4Frames(lz4_flex::frame::FrameDecoder::new(io::BufReader::new(r))))
+    Ok(Lz4Frames(lz4_flex::frame::FrameDecoder::new(io::BufReader::new(crate::lz4_track::Lz4Track::new(r)))))
 }
 
 /// lz4_flex's decoder reports end-of-file at the end of every frame, so that
@@ -339,15 +362,26 @@ fn lz4_decoder<R: Read>(head: &[u8], mut r: R) -> io::Result<Lz4Frames<R>> {
 /// and stopping at the first frame boundary silently drops the rest. A `0` is
 /// passed on only when the input itself is exhausted; anything left means
 /// another frame, which the next read starts.
-struct Lz4Frames<R: Read>(lz4_flex::frame::FrameDecoder<io::BufReader<R>>);
+///
+/// lz4_flex also reports end-of-file when the input ends between two blocks
+/// of an unfinished frame, so at the end of the input the framing is checked
+/// too: a stream cut off mid-frame is an error, not a shorter file.
+struct Lz4Frames<R: Read>(lz4_flex::frame::FrameDecoder<io::BufReader<crate::lz4_track::Lz4Track<R>>>);
 
 impl<R: Read> Read for Lz4Frames<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         use io::BufRead;
         loop {
             let n = self.0.read(buf)?;
-            if n > 0 || buf.is_empty() || self.0.get_mut().fill_buf()?.is_empty() {
+            if n > 0 || buf.is_empty() {
                 return Ok(n);
+            }
+            let input = self.0.get_mut();
+            if input.fill_buf()?.is_empty() {
+                if input.get_ref().mid_frame() {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "lz4 stream cut off mid-frame"));
+                }
+                return Ok(0);
             }
         }
     }
@@ -381,20 +415,28 @@ fn peek<R: Read>(mut rdr: R) -> io::Result<Peeked<R>> {
 /// archive. Fixed at one level — that cap is the bomb guard. Every format is
 /// checked, because a check that named only gzip would silently hand a
 /// compressed member to the searcher as binary.
-fn decode_member<F>(name: &str, member: &mut dyn Read, f: &mut F) -> io::Result<()>
+///
+/// Returns what `f` said about the rest of the member, having already read a
+/// compressed member's rest when `f` asked for it.
+fn decode_member<F>(name: &str, member: &mut dyn Read, f: &mut F) -> io::Result<Rest>
 where
-    F: FnMut(&str, &mut dyn Read) -> io::Result<()>,
+    F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
     let (inner_head, mut inner) = peek(member)?;
+    let mut decoded = |d: &mut dyn Read| -> io::Result<Rest> {
+        let rest = f(name, d)?;
+        finish(rest, d)?;
+        Ok(rest)
+    };
     match sniff(&inner_head) {
-        Format::Gzip => f(name, &mut flate2::read::MultiGzDecoder::new(&mut inner)),
-        Format::Zstd => f(name, &mut zstd_decoder(&mut inner)?),
-        Format::Xz => f(name, &mut liblzma::read::XzDecoder::new_multi_decoder(&mut inner)),
-        Format::Bzip2 => f(name, &mut bzip2::read::MultiBzDecoder::new(&mut inner)),
-        Format::Lz4 => f(name, &mut lz4_decoder(&inner_head, &mut inner)?),
+        Format::Gzip => decoded(&mut flate2::read::MultiGzDecoder::new(&mut inner)),
+        Format::Zstd => decoded(&mut zstd_decoder(&mut inner)?),
+        Format::Xz => decoded(&mut liblzma::read::XzDecoder::new_multi_decoder(&mut inner)),
+        Format::Bzip2 => decoded(&mut bzip2::read::MultiBzDecoder::new(&mut inner)),
+        Format::Lz4 => decoded(&mut lz4_decoder(&inner_head, &mut inner)?),
         // No unverified-end note here, unlike a whole `.Z` file: the archive
         // around the member records its length, and a cut archive is a 2.
-        Format::CompressZ => f(name, &mut compress_z_decoder(&mut inner)?),
+        Format::CompressZ => decoded(&mut compress_z_decoder(&mut inner)?),
         _ => f(name, &mut inner),
     }
 }
@@ -403,10 +445,20 @@ where
 ///
 /// Never returns `Err`: a failure on one member is recorded in `Outcome.errors`
 /// and iteration continues, because one bad archive must not abort the others.
-pub fn for_each_member<R, F>(rdr: R, globs: Option<&crate::source::Globs>, mut f: F) -> Outcome
+pub fn for_each_member<R, F>(rdr: R, globs: Option<&crate::source::Globs>, f: F) -> Outcome
 where
     R: Read,
-    F: FnMut(&str, &mut dyn Read) -> io::Result<()>,
+    F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
+{
+    walk_stream(rdr, globs, false, f)
+}
+
+/// [`for_each_member`], told whether `rdr` is a decoder, whose rest is read
+/// when a whole file that is not a tar asks for [`Rest::Verify`].
+fn walk_stream<R, F>(rdr: R, globs: Option<&crate::source::Globs>, compressed: bool, mut f: F) -> Outcome
+where
+    R: Read,
+    F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
     let mut out = Outcome::default();
 
@@ -421,7 +473,11 @@ where
     // Not a tar at all: the whole input is a single anonymous member.
     if sniff(&head) != Format::Tar {
         out.members_seen = 1;
-        match f("", &mut body) {
+        let searched = f("", &mut body).and_then(|rest| match compressed {
+            true => finish(rest, &mut body),
+            false => Ok(()),
+        });
+        match searched {
             Ok(()) => out.members_searched = 1,
             Err(e) => out.errors.push(format!("search failed: {e}")),
         }
@@ -437,12 +493,14 @@ where
         }
     };
 
+    let mut ended = true;
     for entry in entries {
         let mut entry = match entry {
             Ok(e) => e,
             Err(e) => {
                 // Truncated or corrupt: stop this archive, keep what we had.
                 out.errors.push(format!("tar entry: {e}"));
+                ended = false;
                 break;
             }
         };
@@ -468,11 +526,22 @@ where
             continue;
         }
 
+        // A plain member's rest needs no reading here: the tar reads past it
+        // to the next header anyway, through the decoder and its checksum.
         let res = decode_member(&name, &mut entry, &mut f);
         match res {
-            Ok(()) => out.members_searched += 1,
+            Ok(_) => out.members_searched += 1,
             Err(e) => out.errors.push(format!("{name}: {e}")),
         }
+    }
+
+    // The tar ends at its end-of-archive blocks, but the compressed stream
+    // around it goes on to its trailer: gzip's CRC-32 and length, bzip2's
+    // stream CRC, lz4's content checksum. Stopping at the tar's end never
+    // read them, and a corrupt archive could come back a 0 with shifted line
+    // numbers, or a 1. What is left is padding and the trailer.
+    if ended && let Err(e) = io::copy(&mut ar.into_inner(), &mut io::sink()) {
+        out.errors.push(format!("after the tar's end: {e}"));
     }
 
     out

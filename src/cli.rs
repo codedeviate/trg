@@ -92,8 +92,10 @@ EXIT CODES:
 NOTES (documented, and surprising the first time):
     -T lists every member, including ones a search skips as binary.
     Two directories symlinking the same file search it once (identity dedup).
-    An intact archive behind a corrupt gzip trailer is a 0; truncation is
-      still caught and is a 2.
+    Every checksum is read, including the gzip, bzip2 or lz4 trailer after a
+      tar's end and the rest of a member that looked binary, so a corrupt
+      archive is a 2. A file a few bytes long, shorter than its format's
+      signature, reads as plain bytes; a plain .tar has no checksum on data.
     With -j above 1, results wait so they come out in order. Once more than
       64 MB is waiting, trg writes it out of order, with a note on stderr.
       Memory can still peak well above 64 MB: archives being searched are not
@@ -205,6 +207,7 @@ where
     let mut explicit_jobs = false;
     let mut explicit_nice = false;
     let mut ctx_both: Option<usize> = None;
+    let (mut before, mut after): (Option<usize>, Option<usize>) = (None, None);
     // Positionals are banked rather than assigned as they arrive, so the rule
     // that splits PATTERN from PATH does not depend on whether `-T` or `-e`
     // happened to come before or after them on the command line.
@@ -218,8 +221,15 @@ where
                 a.patterns.push(p.value()?.string()?);
                 explicit_patterns = true;
             }
-            Short('i') | Long("ignore-case") => a.search.case_insensitive = true,
-            Short('S') | Long("smart-case") => a.search.smart_case = true,
+            // As in rg, the last of -i and -S wins.
+            Short('i') | Long("ignore-case") => {
+                a.search.case_insensitive = true;
+                a.search.smart_case = false;
+            }
+            Short('S') | Long("smart-case") => {
+                a.search.smart_case = true;
+                a.search.case_insensitive = false;
+            }
             Short('w') | Long("word-regexp") => a.search.word = true,
             Short('F') | Long("fixed-strings") => a.search.fixed = true,
             Short('v') | Long("invert-match") => a.search.invert = true,
@@ -232,10 +242,10 @@ where
             Short('n') | Long("line-number") => a.search.line_numbers = true,
             Short('N') | Long("no-line-number") => a.search.line_numbers = false,
             Short('A') | Long("after") | Long("after-context") => {
-                a.search.after = p.value()?.parse()?
+                after = Some(p.value()?.parse()?)
             }
             Short('B') | Long("before") | Long("before-context") => {
-                a.search.before = p.value()?.parse()?
+                before = Some(p.value()?.parse()?)
             }
             Short('C') | Long("context") => ctx_both = Some(p.value()?.parse()?),
             Short('o') | Long("only-matching") => a.print.only_matching = true,
@@ -327,10 +337,9 @@ where
 
     // -j given explicitly after --turbo must win; --turbo already respected
     // explicit_jobs, so nothing more is needed here.
-    if let Some(n) = ctx_both {
-        a.search.before = n;
-        a.search.after = n;
-    }
+    // As in rg, -A and -B win over -C whichever comes first.
+    a.search.before = before.or(ctx_both).unwrap_or(0);
+    a.search.after = after.or(ctx_both).unwrap_or(0);
     // Collapse the output-mode flags into exactly one mode here, so nothing
     // downstream has to re-derive the precedence. Most suppressive wins: `-q`
     // asked for no output at all, and honouring the noisier flag over it would
