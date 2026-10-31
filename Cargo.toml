@@ -40,8 +40,8 @@ libc = "0.2.189"
 liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 lz4_flex = "0.14.0"
 num_cpus = "1.17.0"
-stuffr-core = "0.18.2"
-stuffr-formats = { version = "0.18.2", default-features = false, features = ["zip", "compress"] }
+stuffr-core = "0.23.0"
+stuffr-formats = { version = "0.23.0", default-features = false, features = ["zip", "compress"] }
 tar = "0.4.46"
 termcolor = "1.4.1"
 zstd = "0.14.3"
@@ -52,7 +52,7 @@ libc = "0.2.189"
 liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 tar = "0.4.46"
 tempfile = "3.27.0"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2", "bzip2"] }
+zip = { version = "9.2.0", default-features = false, features = ["deflate-flate2", "bzip2"] }
 zstd = "0.14.3"
 
 [features]

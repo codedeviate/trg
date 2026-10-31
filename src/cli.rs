@@ -104,10 +104,11 @@ NOTES (documented, and surprising the first time):
       no -z flag. gzip, zstd, xz, bzip2 and lz4 are recognised, each unwrapped
       one level, so a logrotate'd access.log.1.gz, .zst, .xz, .bz2 or .lz4
       inside the archive is searched as text rather than skipped as binary.
-      .Z (compress) is read too, but only as a whole file: a .Z member
-      inside an archive is reported unread, a 2.
+      .Z (compress) is read too, as a whole file and as a member.
     A zip's members are searched like a tar's, compressed ones included. A
       zip or tar inside another archive is searched as bytes, not opened.
+      A zip whose local headers disagree with its central directory is
+      searched as the directory has it, and is a 2.
     .Z has no length and no checksum, so a truncated .Z reads as a shorter
       file with no error. A .Z with no match is still a 1, with a note on
       stderr that the file could not vouch for its own end.

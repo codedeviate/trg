@@ -190,3 +190,21 @@ fn a_zip_in_a_walked_directory_is_searched() {
     assert!(out.contains("NEEDLE zipped") && out.contains("NEEDLE tarred"), "got: {out} / {err}");
     assert_eq!(c, Some(0));
 }
+
+/// A "cloaked" zip, whose local header names a different file from its
+/// central directory, shows one name to `unzip` and another to a streaming
+/// reader (GHSA-m665-v7pm-7grj). trg reads by the central directory, as
+/// unzip does, and says the headers disagree: a 2, since which member was
+/// meant is not something trg can know.
+#[test]
+fn a_zip_whose_headers_disagree_is_two() {
+    let mut bytes = helpers::zip_bytes(&[("good.log", b"NEEDLE cloaked\n")], ZipMethod::Stored);
+    // The local header's name follows its 30 fixed bytes.
+    assert_eq!(&bytes[30..38], b"good.log");
+    bytes[30..38].copy_from_slice(b"evil.log");
+    let z = helpers::raw("cloak.zip", &bytes);
+    let (out, err, c) = run(&["NEEDLE", z.path.to_str().unwrap()]);
+    assert_eq!(c, Some(2), "got: {out} / {err}");
+    assert!(out.contains("good.log:1:NEEDLE cloaked"), "the central directory's name: {out}");
+    assert!(err.contains("disagree on name for entry `good.log`"), "got: {err}");
+}

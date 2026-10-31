@@ -9,7 +9,23 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- A `.Z` (Unix `compress`) member inside an archive, such as a log rotated
+  with `compresscmd compress`, is decompressed and searched like a `.gz` one.
+  It used to be reported unread, a 2. stuffr 0.23 made its `.Z` decoder read
+  from a borrowed reader, which an archive member is.
+
 ### Security
+
+- stuffr 0.18.2 → 0.23.0, which moves zip from 8.6 to 9.x and fixes
+  GHSA-m665-v7pm-7grj and RUSTSEC-2026-0367, -0368 and -0369. The last three
+  are in zip's extraction to disk, which trg never does. The first is "zip
+  cloaking": the local headers name different files from the central
+  directory, so tools disagree on what a zip holds. trg already read by the
+  central directory, as `unzip` does. It now also reports the disagreement,
+  so a cloaked zip is an exit 2.
+- The `zip` dev-dependency (test fixtures only) is on 9.x too.
 
 - `zstd` 0.13 → 0.14.3 (zstd-safe 8.2.0, zstd-sys 2.1.2), which fixes
   RUSTSEC-2026-0391 and RUSTSEC-2026-0395 to -0406 and -0410. None of them

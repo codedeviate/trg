@@ -58,6 +58,11 @@ pub const FILES: &[File] = &[
         note: "Unix compress",
     },
     File {
+        path: "legacy/web-2019-02-28.tgz",
+        members: &["access.log", "access.log.1.Z"],
+        note: "rotated with compress",
+    },
+    File {
         path: "logs/iis-2026-08-24.zip",
         members: &["u_ex260824.log"],
         note: "Windows line endings",
@@ -397,6 +402,13 @@ pub const SECTIONS: &[Section] = &[
                 says: ".Z (Unix compress) has no length and no checksum, so a cut-off \
                        file reads as a shorter one. A .Z with no match is still exit 1, \
                        with a note on stderr that the file could not vouch for its end.",
+            },
+            Example {
+                cmd: "trg 'cart.php' legacy/web-2019-02-28.tgz",
+                exit: 0,
+                says: "A rotated log inside an archive is unwrapped one level, whether \
+                       gzip, zstd, xz, bzip2, lz4 or .Z, and searched with its own \
+                       line numbers: here access.log.1.Z.",
             },
         ],
     },

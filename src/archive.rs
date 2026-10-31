@@ -79,11 +79,10 @@ impl<R: Read> Read for Guarded<R> {
     }
 }
 
-// The guard is only ever read at drop time; `File` is `Send`, so the whole
-// wrapper is, which is what lets it box into `Box<dyn Read + Send>` for the
-// worker threads of Task 10.
-impl<R: Read + Send> Guarded<R> {
-    fn boxed(inner: R, guard: CacheGuard) -> Box<dyn Read + Send>
+// Not `Send`: stuffr's decoders (`.Z`) are not, and nothing needs it, since
+// each worker opens and reads its archive on its own thread.
+impl<R: Read> Guarded<R> {
+    fn boxed(inner: R, guard: CacheGuard) -> Box<dyn Read>
     where
         R: 'static,
     {
@@ -95,7 +94,7 @@ impl<R: Read + Send> Guarded<R> {
 ///
 /// Signature frozen: Tasks 4 and 8 build on it. Cache-dropping behaviour is
 /// reached through [`open_decoded_dropping`].
-pub fn open_decoded(path: &Path) -> anyhow::Result<Box<dyn Read + Send>> {
+pub fn open_decoded(path: &Path) -> anyhow::Result<Box<dyn Read>> {
     open_stream(path, false)
 }
 
@@ -107,7 +106,7 @@ pub fn open_decoded(path: &Path) -> anyhow::Result<Box<dyn Read + Send>> {
 /// Apache holds its live logfiles open for append, and evicting those pages
 /// would evict cache another process is actively using — precisely the harm
 /// this feature exists to prevent.
-pub fn open_decoded_dropping(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + Send>> {
+pub fn open_decoded_dropping(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read>> {
     open_stream(path, drop_cache)
 }
 
@@ -122,7 +121,7 @@ pub fn open_decoded_dropping(path: &Path, drop_cache: bool) -> anyhow::Result<Bo
 /// `F_NOCACHE` is ever applied to; plain files are excluded by design and stay
 /// fully cached regardless. Sixteen pages per archive against the alternative
 /// of setting `F_NOCACHE` on a live Apache log is the trade being made.
-fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + Send>> {
+fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read>> {
     match open_input(path, drop_cache)? {
         Opened::Stream(r, _) => Ok(r),
         Opened::Zip(..) => anyhow::bail!("a zip is not a stream; it is read through walk_archive"),
@@ -133,7 +132,7 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read + S
 /// zip, which is read by seeking and so cannot be one.
 enum Opened {
     /// The stream, and whether its format can detect its own truncation.
-    Stream(Box<dyn Read + Send>, bool),
+    Stream(Box<dyn Read>, bool),
     /// The file, rewound, and the guard that drops its pages when the walk is
     /// over.
     Zip(File, CacheGuard),
@@ -183,13 +182,9 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
 /// The format has no length and no checksum, so a truncated `.Z` decodes
 /// cleanly to a shorter file, wherever the cut falls: the one format here
 /// where a 1 is only as good as the file it was read from. Hence
-/// [`Outcome::unverified_end`]. stuffr's decoder is reachable
-/// only as a codec over a reader it owns, which is why a `.Z` *member* inside
-/// an archive is refused rather than decoded; see [`decode_member`].
-fn compress_z_decoder<R: Read + Send + 'static>(r: R) -> io::Result<Box<dyn stuffr_core::Source>> {
-    use stuffr_core::Codec;
-    stuffr_formats::legacy::compress_z::CompressZ
-        .decoder(Box::new(stuffr_core::ReaderSource::new(r)), &Default::default())
+/// [`Outcome::unverified_end`], for a whole file and for a member alike.
+fn compress_z_decoder<'a, R: Read + 'a>(r: R) -> io::Result<Box<dyn stuffr_core::Source + 'a>> {
+    stuffr_core::decode_reader(&stuffr_formats::legacy::compress_z::CompressZ, r, &Default::default())
         .map_err(io::Error::other)
 }
 
@@ -301,9 +296,12 @@ where
         }
     }
 
-    let report = archive.fidelity();
-    if report.has_warnings() {
-        out.errors.push(format!("{report:?}"));
+    // Among them a cloaked zip (GHSA-m665-v7pm-7grj), whose local header
+    // names one file and its central directory another. trg searched what the
+    // central directory names, as unzip would, but which was meant is not
+    // knowable.
+    for w in &archive.fidelity().warnings {
+        out.errors.push(w.to_string());
     }
     out
 }
@@ -358,12 +356,8 @@ impl<R: Read> Read for Lz4Frames<R> {
 /// Read the sniff window, then hand back a reader with those bytes replayed in
 /// front of the remainder.
 ///
-/// The return type is concrete rather than `impl Read`, and carries no `Send`
-/// bound: `Send`-ness is then inferred per call site. `open_decoded`'s
-/// `BufReader<File>` chain is still `Send` (so it boxes into
-/// `Box<dyn Read + Send>` for the worker threads of Task 10), while
-/// `for_each_member` can also call this on a `&mut tar::Entry<'_, R>`, which is
-/// not `Send`.
+/// The return type is concrete rather than `impl Read`, so `for_each_member`
+/// can also call this on a `&mut tar::Entry<'_, R>`.
 /// The sniffed head, and a reader that replays it before the rest.
 type Peeked<R> = (Vec<u8>, io::Chain<io::Cursor<Vec<u8>>, R>);
 
@@ -398,11 +392,9 @@ where
         Format::Xz => f(name, &mut liblzma::read::XzDecoder::new_multi_decoder(&mut inner)),
         Format::Bzip2 => f(name, &mut bzip2::read::MultiBzDecoder::new(&mut inner)),
         Format::Lz4 => f(name, &mut lz4_decoder(&inner_head, &mut inner)?),
-        // Searched as it is, this would be binary and skipped: a member never
-        // read, called clean. Unread is a 2.
-        Format::CompressZ => Err(io::Error::other(
-            ".Z (compress) data is read only as a whole file, not inside an archive",
-        )),
+        // No unverified-end note here, unlike a whole `.Z` file: the archive
+        // around the member records its length, and a cut archive is a 2.
+        Format::CompressZ => f(name, &mut compress_z_decoder(&mut inner)?),
         _ => f(name, &mut inner),
     }
 }

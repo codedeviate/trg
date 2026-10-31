@@ -69,13 +69,14 @@ disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
 ## Features
 
 - `archive:member/path:line:` output, line numbers correct per member.
-- Compression detected from content, not the filename: gzip, zstd, xz, bzip2
-  and lz4, each unwrapped one level, so a logrotate'd `access.log.1.gz`,
-  `.zst`, `.xz`, `.bz2` or `.lz4` *inside* an archive is searched as text.
-- `.zip` archives, searched member by member like a tar, and Unix
-  `compress` (`.Z`), both through the
-  [stuffr](https://github.com/codedeviate/stuffr) crates. A `.Z` is read only
-  as a whole file, not as a member inside an archive.
+- Compression detected from content, not the filename: gzip, zstd, xz,
+  bzip2, lz4 and Unix `compress`, each unwrapped one level, so a logrotate'd
+  `access.log.1.gz`, `.zst`, `.xz`, `.bz2`, `.lz4` or `.Z` *inside* an archive
+  is searched as text.
+- `.zip` archives, searched member by member like a tar, and `.Z`, both
+  through the [stuffr](https://github.com/codedeviate/stuffr) crates. A zip
+  whose local headers name different files from its central directory (a
+  "cloaked" zip) is searched as the directory has it, and is an exit 2.
 - ripgrep's flag names wherever the job is the same (`-i`, `-w`, `-F`, `-v`,
   `-C`, `-o`, `-c`, `-l`, `-q`, `--json`, …). `-g` filters *members* inside
   archives, `--archive-glob` filters the archives a directory walk finds, and

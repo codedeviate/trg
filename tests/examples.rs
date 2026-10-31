@@ -97,6 +97,12 @@ fn build_tree() -> tempfile::TempDir {
         "access.log",
         b"10.0.0.3 - - [01/Mar/2019:09:00:00 +0100] \"GET /cart.php HTTP/1.0\" 200 900\n",
     )])));
+    put_fixture(r, "legacy/web-2019-02-28.tgz", helpers::tgz("x", &[
+        ("access.log", b"10.0.0.3 - - [28/Feb/2019:09:00:00 +0100] \"GET / HTTP/1.0\" 200 512\n"),
+        ("access.log.1.Z", &helpers::z_bytes(
+            b"10.0.0.3 - - [27/Feb/2019:09:00:00 +0100] \"GET /cart.php HTTP/1.0\" 200 900\n",
+        )),
+    ]));
     put(r, "logs/iis-2026-08-24.zip", &helpers::zip_bytes(&[(
         "u_ex260824.log",
         b"#Fields: date time c-ip cs-method cs-uri-stem sc-status time-taken\r\n\

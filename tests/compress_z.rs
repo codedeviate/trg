@@ -74,21 +74,34 @@ fn a_corrupt_z_header_is_two() {
     assert!(!err.is_empty());
 }
 
-/// stuffr's `.Z` decoder only takes a reader it can own, so a `.Z` member
-/// inside an archive is not decompressed. It must say so and exit 2, not be
-/// searched as binary and come back a clean 1.
+/// A `.Z` member inside an archive is decompressed and searched like a
+/// `.gz` one, with its own line numbers, in a tar and in a zip alike.
 #[test]
-fn a_z_member_inside_an_archive_is_two_not_one() {
-    let inner = helpers::z_bytes(b"NEEDLE in a nested .Z\n");
+fn a_z_member_inside_an_archive_is_searched() {
+    let inner = helpers::z_bytes(b"first\nNEEDLE in a nested .Z\n");
     let f = helpers::tgz("m.tgz", &[("logs/access.log.1.Z", &inner), ("logs/plain.log", b"NEEDLE plain\n")]);
     let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
-    assert!(out.contains("NEEDLE plain"), "the rest of the archive is still searched: {out}");
-    assert_eq!(c, Some(2), "got: {out} / {err}");
-    assert!(err.contains("access.log.1.Z") && err.contains(".Z"), "got: {err}");
+    assert!(out.contains("logs/access.log.1.Z:2:NEEDLE in a nested .Z"), "got: {out} / {err}");
+    assert!(out.contains("NEEDLE plain"), "got: {out}");
+    assert_eq!(c, Some(0), "got: {err}");
+    assert!(err.is_empty(), "the archive vouches for the member's length, so no note: {err}");
 
     let z = helpers::zip("m.zip", &[("access.log.1.Z", &inner)]);
-    let (_, err, c) = run(&["NEEDLE", z.path.to_str().unwrap()]);
-    assert_eq!(c, Some(2), "inside a zip too: {err}");
+    let (out, err, c) = run(&["NEEDLE", z.path.to_str().unwrap()]);
+    assert!(out.contains("access.log.1.Z:2:NEEDLE"), "inside a zip too: {out} / {err}");
+    assert_eq!(c, Some(0));
+}
+
+/// A corrupt `.Z` member is unread, a 2, and the rest of the archive is
+/// still searched.
+#[test]
+fn a_corrupt_z_member_is_two() {
+    let bad: &[u8] = &[0x1f, 0x9d, 0x9f, 0x41, 0x42, 0x43];
+    let f = helpers::tgz("m.tgz", &[("logs/access.log.1.Z", bad), ("logs/plain.log", b"NEEDLE plain\n")]);
+    let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.contains("NEEDLE plain"), "got: {out}");
+    assert_eq!(c, Some(2), "got: {out} / {err}");
+    assert!(err.contains("access.log.1.Z"), "got: {err}");
 }
 
 #[test]
