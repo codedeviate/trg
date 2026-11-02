@@ -47,10 +47,15 @@ How versions are chosen before 1.0.0 is described in
   whole, shorter archive, a 1 about the members never read. A tar that does
   not end in zero blocks is now reported cut short, a 2.
 - `-v -m N` with after-context printed every line after the limit, each as
-  a match. The matcher was built without its line terminator (`crlf(false)`
+  a match. grep-searcher 0.1.17 searches the rest of a buffer as if nothing
+  matched once the limit is reached, which under `-v` makes every line a
+  match; rg 15.2 does the same reading a pipe. trg now enforces the limit in
+  its own sink for that one combination, and prints what rg would on a
+  file: the next `-A` lines, matches as matches, then stops.
+- The matcher was built without its line terminator (`crlf(false)` after it
   cleared it), which kept every search on the searcher's slow line-by-line
-  path, where grep-searcher has this bug. On the fast path searches with few
-  matches also run faster: 2 GiB of empty lines took 37 s and take 0.3 s.
+  path. On the fast path, searches with few matches run faster: 2 GiB of
+  empty lines took 37 s and take 0.3 s.
 
 ## [0.12.0] - 2026-10-31
 

@@ -105,6 +105,7 @@ fn run() -> anyhow::Result<RunStatus> {
         globs: globs.as_ref(),
         drop_cache: args.drop_cache,
         count_mode: args.print.mode == print::Mode::Count,
+        sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
     };
 
     let jobs: Vec<trg::sched::Job> = items

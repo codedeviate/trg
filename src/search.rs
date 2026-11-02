@@ -82,8 +82,9 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
         .invert_match(o.invert)
         // `-m`, enforced by the searcher as in rg: it stops after the limit
         // but still prints the after-context of the last match, and it counts
-        // inverted matches right (`-v -m`).
-        .max_matches(o.max_count)
+        // inverted matches right (`-v -m`). Except for `-v -m` with
+        // after-context, which `sink_limit` hands to the sink.
+        .max_matches(if sink_limit(o).is_some() { None } else { o.max_count })
         .heap_limit(Some(o.heap_limit))
         .binary_detection(if o.text {
             BinaryDetection::none()
@@ -96,6 +97,18 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
     b.build()
 }
 
+/// The `-m` limit the sink enforces instead of the searcher: `-v -m N` with
+/// after-context. grep-searcher 0.1.17 gets that one wrong. Once the limit is
+/// reached it searches the rest of a buffer as if no line matched, so with
+/// `-v` every line from there on is an inverted match. That happens on its
+/// slow path, and on the fast one when the after-context runs into the next
+/// read buffer, which streamed members do all the time: every line after the
+/// limit came out as a match. rg 15.2 does the same reading a pipe. With no
+/// limit of its own, the searcher tells matches from context right.
+pub fn sink_limit(o: &SearchOpts) -> Option<u64> {
+    o.max_count.filter(|_| o.invert && o.after > 0)
+}
+
 /// Wraps the printer's sink to record what the searcher reported, which is
 /// the exit code's source of truth. Named for the `-m` limit it used to
 /// enforce; `SearcherBuilder::max_matches` does that now, as in rg, because
@@ -105,11 +118,33 @@ pub struct MaxCount<S> {
     inner: S,
     seen: u64,
     binary_at: Option<u64>,
+    /// [`sink_limit`], and the after-context it allows past it.
+    limit: Option<(u64, usize)>,
+    /// Lines still to print once the limit is reached, as rg prints them:
+    /// matches as matches, the rest as context. At `Some(0)` every call is
+    /// refused unforwarded: the searcher's fast path takes a sink's `false`
+    /// for the end of one loop and goes on to look for after-context.
+    left: Option<usize>,
 }
 
 impl<S: Sink> MaxCount<S> {
-    pub fn new(inner: S) -> Self {
-        Self { inner, seen: 0, binary_at: None }
+    pub fn new(inner: S, limit: Option<(u64, usize)>) -> Self {
+        Self { inner, seen: 0, binary_at: None, limit, left: None }
+    }
+
+    fn done(&self) -> bool {
+        self.left == Some(0)
+    }
+
+    /// One more line past the limit; whether the search goes on.
+    fn past_limit(&mut self, more: bool) -> bool {
+        match self.left.as_mut() {
+            Some(left) => {
+                *left -= 1;
+                more && *left > 0
+            }
+            None => more,
+        }
     }
 
     /// Whether the searcher reported any match at all for this member.
@@ -153,15 +188,36 @@ impl<S: Sink> Sink for MaxCount<S> {
         // Counting first makes `seen` the record of what the *searcher*
         // reported, which no printer can overrule and no early stop can
         // truncate.
+        if self.done() {
+            return Ok(false);
+        }
+        if self.left.is_some() {
+            let more = self.inner.matched(s, m)?;
+            return Ok(self.past_limit(more));
+        }
         self.seen += 1;
-        self.inner.matched(s, m)
+        let more = self.inner.matched(s, m)?;
+        match self.limit {
+            Some((n, after)) if self.seen == n => {
+                self.left = Some(after);
+                Ok(more && after > 0)
+            }
+            _ => Ok(more),
+        }
     }
 
     fn context(&mut self, s: &Searcher, c: &SinkContext<'_>) -> Result<bool, S::Error> {
-        self.inner.context(s, c)
+        if self.done() {
+            return Ok(false);
+        }
+        let more = self.inner.context(s, c)?;
+        Ok(self.past_limit(more))
     }
 
     fn context_break(&mut self, s: &Searcher) -> Result<bool, S::Error> {
+        if self.done() {
+            return Ok(false);
+        }
         self.inner.context_break(s)
     }
 
@@ -177,6 +233,7 @@ impl<S: Sink> Sink for MaxCount<S> {
     fn begin(&mut self, s: &Searcher) -> Result<bool, S::Error> {
         self.seen = 0;
         self.binary_at = None;
+        self.left = None;
         self.inner.begin(s)
     }
 
@@ -213,6 +270,8 @@ pub struct SearchCtx<'a> {
     /// already did that — only to decide whether a suppressed count is worth a
     /// note on stderr.
     pub count_mode: bool,
+    /// `-m` and `-A`, when the sink enforces `-m`: see [`sink_limit`].
+    pub sink_limit: Option<(u64, usize)>,
 }
 
 /// Whether `-g` excludes this input, for the one case `for_each_member` cannot
@@ -249,6 +308,7 @@ fn search_member(
     s: &mut Searcher,
     r: &mut dyn io::Read,
     display: &str,
+    limit: Option<(u64, usize)>,
 ) -> io::Result<MemberVerdict> {
     // The three printers have unrelated sink types, so the body is monomorphic
     // per arm; a macro keeps the one real sequence — build sink, cap it,
@@ -256,7 +316,7 @@ fn search_member(
     macro_rules! run {
         ($p:expr) => {{
             let sink = $p.sink_with_path(m, display);
-            let mut capped = MaxCount::new(sink);
+            let mut capped = MaxCount::new(sink, limit);
             let res = s.search_reader(m, r, &mut capped);
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
@@ -291,7 +351,7 @@ pub fn search_archive(
             return Ok(crate::archive::Rest::Leave);
         }
         let display = display_path(path, member, sep);
-        let v = search_member(printer, m, s, r, &display)?;
+        let v = search_member(printer, m, s, r, &display, ctx.sink_limit)?;
         matched |= v.matched;
         // `-c` is otherwise the only mode that goes completely silent on a
         // member that matched and then hit binary data: stdout stays empty and

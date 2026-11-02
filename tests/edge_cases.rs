@@ -196,6 +196,38 @@ fn max_count_zero_matches_nothing() {
     }
 }
 
+/// `-v -m N -A k`: after the Nth line, k more lines, matches as matches and
+/// the rest as context, then stop. grep-searcher printed every line after the
+/// limit as a match, and rg 15.2 does on some inputs, so this is checked
+/// against the answer rather than against rg.
+#[test]
+fn invert_max_count_with_after_context_stops_after_the_context() {
+    let body = b"a\nNEEDLE\nb\nc\nNEEDLE\nd\n";
+    let f = helpers::tgz("v.tgz", &[("logs/a.log", body)]);
+    let plain = helpers::raw("v.log", body);
+    let cases: &[(&[&str], &str, &[&str])] = &[
+        (&["-m", "1", "-A", "1"], "NEEDLE", &["1:a", "2-NEEDLE"]),
+        (&["-m", "1", "-A", "3"], "NEEDLE", &["1:a", "2-NEEDLE", "3:b", "4:c"]),
+        (&["-m", "2", "-C", "1"], "NEEDLE$", &["1:a", "2-NEEDLE", "3:b", "4:c"]),
+        (&["-m", "3", "-A", "1"], "^NEEDLE", &["1:a", "2-NEEDLE", "3:b", "4:c", "5-NEEDLE"]),
+    ];
+    let tgz = format!("{}:logs/a.log", f.path.display());
+    let log = plain.path.display().to_string();
+    for (flags, pat, want) in cases {
+        for prefix in [&tgz, &log] {
+            let path = prefix.strip_suffix(":logs/a.log").unwrap_or(prefix);
+            let mut args = vec!["-v"];
+            args.extend(*flags);
+            args.extend([*pat, path]);
+            let (out, err, c) = run(&args);
+            // `prefix:N:line` or `prefix-N-line`, down to `N:line` or `N-line`.
+            let got: Vec<&str> = out.lines().map(|l| &l.strip_prefix(prefix.as_str()).unwrap()[1..]).collect();
+            assert_eq!(got, *want, "{flags:?} {pat} on {path}: {err}");
+            assert_eq!(c, Some(0));
+        }
+    }
+}
+
 #[test]
 fn archive_sep_changes_the_separator() {
     let f = helpers::tgz("s.tgz", &[("logs/a.log", b"NEEDLE\n")]);
