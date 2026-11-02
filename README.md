@@ -201,6 +201,8 @@ cargo test
 
 The page-cache residency test runs on Linux only. `bench/` holds the corpus
 builder and the comparison against `zgrep` and `rg`.
+[`bench/torture/`](bench/torture/README.md) sweeps damaged and hostile input
+for exit codes that say more than trg read.
 
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each version
 - [CONTRIBUTING.md](CONTRIBUTING.md) — commit conventions and versioning
