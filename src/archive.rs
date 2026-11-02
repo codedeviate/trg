@@ -147,7 +147,11 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
 
     let format = sniff(&head);
     let drop_cache = drop_cache && format != Format::Plain;
-    crate::resource::prepare(&dup, drop_cache);
+    // Not for a zip: it is read by seeking, a header and an entry at a time,
+    // and under macOS's F_NOCACHE every one of those small reads went to the
+    // disk. 70,000 entries took 20 s instead of 0.3 s. Linux drops a zip's
+    // pages after the walk, in `finish`, as for any archive.
+    crate::resource::prepare(&dup, drop_cache && format != Format::Zip);
     let guard = CacheGuard { file: dup, drop_cache };
 
     let unverified_end = format == Format::CompressZ;

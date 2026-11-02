@@ -82,7 +82,7 @@ disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
   archives, `--archive-glob` filters the archives a directory walk finds, and
   both take ripgrep's `!` exclusions (`-g '!*.error.log'`).
 - Polite by default: `nice 10`, idle I/O priority, one archive at a time, and
-  no page-cache footprint. `--turbo` runs one archive per CPU at normal
+  no page-cache footprint (on macOS, zips excepted). `--turbo` runs one archive per CPU at normal
   priority when you need the answer now; reads stay at idle I/O priority and
   archives still leave the page cache (`--no-drop-cache` keeps them).
 - An exit code you can trust (below).

@@ -52,6 +52,10 @@ How versions are chosen before 1.0.0 is described in
   match; rg 15.2 does the same reading a pipe. trg now enforces the limit in
   its own sink for that one combination, and prints what rg would on a
   file: the next `-A` lines, matches as matches, then stops.
+- On macOS a zip with many entries took seconds per thousand: `F_NOCACHE`
+  sent every small seek-and-read to the disk, 20 s for 70,000 entries. Zips
+  are now read through the page cache on macOS (0.3 s); Linux still drops
+  their pages after the read.
 - The matcher was built without its line terminator (`crlf(false)` after it
   cleared it), which kept every search on the searcher's slow line-by-line
   path. On the fast path, searches with few matches run faster: 2 GiB of
