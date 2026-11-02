@@ -159,3 +159,20 @@ fn a_binary_looking_stored_zip_entry_is_read_to_its_crc() {
     let (_, err, c) = run(&["ZZZ", f.path.to_str().unwrap()]);
     assert_eq!(c, Some(2), "got: {err}");
 }
+
+/// A plain tar has no checksum, and its reader takes the end of the input at
+/// a header boundary for the end of the archive. A cut between two members
+/// must still be a 2, and only the zero blocks every tar ends in tell the two
+/// apart.
+#[test]
+fn a_plain_tar_cut_between_members_is_two() {
+    let full = helpers::tar_bytes(&[("logs/b.log", &log(100)), ("logs/a.log", b"NEEDLE\n")]);
+    let second = 512 + log(100).len().div_ceil(512) * 512;
+    let f = helpers::raw("cut.tar", &full[..second]);
+    let (_, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+    assert_eq!(c, Some(2), "cut at {second} of {}: {err}", full.len());
+    assert!(err.contains("end-of-archive"), "got: {err}");
+    let f = helpers::raw("whole.tar", &full);
+    let (_, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+    assert_eq!(c, Some(0), "the whole tar: {err}");
+}

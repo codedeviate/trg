@@ -484,7 +484,7 @@ where
         return out;
     }
 
-    let mut ar = tar::Archive::new(body);
+    let mut ar = tar::Archive::new(EndMark { inner: body, zeros: 0 });
     let entries = match ar.entries() {
         Ok(e) => e,
         Err(e) => {
@@ -540,9 +540,36 @@ where
     // stream CRC, lz4's content checksum. Stopping at the tar's end never
     // read them, and a corrupt archive could come back a 0 with shifted line
     // numbers, or a 1. What is left is padding and the trailer.
-    if ended && let Err(e) = io::copy(&mut ar.into_inner(), &mut io::sink()) {
-        out.errors.push(format!("after the tar's end: {e}"));
+    if ended {
+        let mut rest = ar.into_inner();
+        if let Err(e) = io::copy(&mut rest, &mut io::sink()) {
+            out.errors.push(format!("after the tar's end: {e}"));
+        } else if rest.zeros < 512 {
+            out.errors.push("the tar ends without its end-of-archive blocks: cut short".into());
+        }
     }
 
     out
+}
+
+/// Counts the zero bytes the stream ends in. The tar reader takes the end of
+/// its input at a header boundary for the end of the archive, so a plain tar
+/// cut between two members read as a whole, shorter one, and a search of it
+/// was a 1 about members never read. Every tar writer ends the archive with
+/// zero blocks; a stream that does not end in at least one was cut.
+struct EndMark<R> {
+    inner: R,
+    zeros: u64,
+}
+
+impl<R: Read> Read for EndMark<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let b = &buf[..n];
+        self.zeros = match b.iter().rposition(|&x| x != 0) {
+            Some(i) => (n - 1 - i) as u64,
+            None => self.zeros + n as u64,
+        };
+        Ok(n)
+    }
 }

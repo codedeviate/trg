@@ -55,14 +55,22 @@ pub fn build_matcher(
     // with `\n` as the line terminator so no match can span two lines. Built
     // single-line, `-o '^[0-9.]+'` matched the first line and printed every
     // later hit whole.
+    //
+    // `crlf` goes first: `crlf(false)` clears the line terminator, and set
+    // the other way round the matcher had none. That sent every search down
+    // the searcher's slow line-by-line path, where `-v -m N -A k` printed
+    // every line after the limit as a match (a grep-searcher bug rg also
+    // hits, with `\A` patterns). `crlf(true)` sets `\r\n` itself.
     let mut b = grep_regex::RegexMatcherBuilder::new();
     b.case_insensitive(o.case_insensitive)
         .case_smart(o.smart_case)
         .word(o.word)
         .fixed_strings(o.fixed)
         .multi_line(true)
-        .line_terminator(Some(b'\n'))
         .crlf(o.crlf);
+    if !o.crlf {
+        b.line_terminator(Some(b'\n'));
+    }
     Ok(b.build_many(pats)?)
 }
 

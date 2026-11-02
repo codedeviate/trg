@@ -191,6 +191,10 @@ fn max_count_agrees_with_rg() {
         body_with(members, &["-m", "2", "-A", "2"], "NEEDLE");
         body_with(members, &["-m", "1", "-C", "1"], "NEEDLE");
         body_with(members, &["-v", "-m", "2"], "NEEDLE");
+        // Every line after the limit came out as a match, while the matcher
+        // lacked its line terminator and searched on the slow path.
+        body_with(members, &["-v", "-m", "1", "-A", "1"], "NEEDLE");
+        body_with(members, &["-v", "-m", "1", "-A", "2"], "NEEDLE$");
         body_with(members, &["-m", "0"], "NEEDLE");
     }
 }

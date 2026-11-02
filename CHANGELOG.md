@@ -9,6 +9,13 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- `bench/torture/`: the sweeps that found the fixes below (truncation,
+  corruption, odd input, `-j`, signals, differential against rg, size limits
+  and bombs) as scripts that fail on an unexpected result, on macOS and in a
+  Linux container.
+
 ### Changed
 
 - **Breaking:** a corrupt archive is now an exit 2 wherever its format can
@@ -34,6 +41,14 @@ How versions are chosen before 1.0.0 is described in
 - `-A` and `-B` win over `-C` whichever comes first, and the last of `-i` and
   `-S` wins, as in rg.
 - `-c -o` counts matches, not matching lines, as in rg.
+- A plain `.tar` cut off at a block boundary between two members read as a
+  whole, shorter archive, a 1 about the members never read. A tar that does
+  not end in zero blocks is now reported cut short, a 2.
+- `-v -m N` with after-context printed every line after the limit, each as
+  a match. The matcher was built without its line terminator (`crlf(false)`
+  cleared it), which kept every search on the searcher's slow line-by-line
+  path, where grep-searcher has this bug. On the fast path searches with few
+  matches also run faster: 2 GiB of empty lines took 37 s and take 0.3 s.
 
 ## [0.12.0] - 2026-10-31
 
