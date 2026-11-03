@@ -138,6 +138,7 @@ To build one yourself, from macOS or any other host, with `cargo-zigbuild`,
 ```sh
 scripts/build-linux.sh            # dist/trg-<version>-x86_64-linux
 scripts/build-linux.sh aarch64    # dist/trg-<version>-aarch64-linux
+scripts/release-build.sh          # target/release/trg and both of the above
 ```
 
 The binary depends on nothing but glibc 2.17 or newer, so it runs on any

@@ -51,7 +51,10 @@ To release:
    bottom of the file.
 3. Set `version` in `Cargo.toml` (and let `Cargo.lock` follow), and in the
    download example in `README.md`.
-4. Commit as `chore(release): X.Y.Z` and tag `vX.Y.Z`.
+4. Commit as `chore(release): X.Y.Z` and tag `vX.Y.Z`. Then run
+   `scripts/release-build.sh`, which builds the host binary and both Linux
+   binaries into `dist/`, so a Linux build of every release is at hand to
+   test on a server without waiting for the workflow.
 5. Push `master` and the tag. The tag push runs
    `.github/workflows/release.yml`, which creates the GitHub release
    `targrep X.Y.Z` with that version's changelog section as its notes, then
