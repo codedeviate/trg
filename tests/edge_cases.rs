@@ -299,3 +299,32 @@ fn color_always_colours_and_a_pipe_does_not() {
     let (never, _, _) = run(&["--color", "never", "NEEDLE", p]);
     assert!(!never.contains('\x1b'), "{never:?}");
 }
+
+/// A NUL a few KB into a member makes it binary before anything is searched,
+/// as rg skips such a file, in every format alike. gzip and xz return short
+/// reads, so the searcher's first buffer used to stop before the NUL: the
+/// line above it matched, and a `.tgz` was a 0 where the same member in a
+/// `.tar.zst` was a 1.
+#[test]
+fn a_member_binary_in_its_first_buffer_is_skipped_in_every_format() {
+    let mut body = b"NEEDLE early\n".to_vec();
+    for i in 0..300 {
+        body.extend_from_slice(format!("line {i} of plain text\n").as_bytes());
+    }
+    body.extend_from_slice(b"bin\0ary\nmore text\n");
+    let m: &[(&str, &[u8])] = &[("logs/a.log", &body)];
+    let fixtures = [
+        helpers::tgz("b.tgz", m),
+        helpers::tar_xz("b.tar.xz", m),
+        helpers::tar_zst("b.tar.zst", m),
+        helpers::tar_bz2("b.tar.bz2", m),
+        helpers::tar_lz4("b.tar.lz4", m),
+        helpers::tar_plain("b.tar", m),
+        helpers::zip("b.zip", m),
+        helpers::raw("b.log", &body),
+    ];
+    for f in &fixtures {
+        let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+        assert_eq!((out.as_str(), c), ("", Some(1)), "{}: {err}", f.path.display());
+    }
+}

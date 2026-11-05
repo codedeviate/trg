@@ -324,6 +324,51 @@ fn excluded_plain_file(member: &str, path: &Path, globs: Option<&crate::source::
     member.is_empty() && globs.is_some_and(|set| !set.is_match(path))
 }
 
+/// Fills the searcher's buffer the way a plain file does: every read returns
+/// as much as was asked for, short only at the end of the member.
+///
+/// The searcher looks for binary data one buffer at a time and stops at the
+/// first NUL, keeping what it matched before it. gzip and xz hand back short
+/// reads, so the first buffer of a member held less of it than with zstd, a
+/// plain tar or the file itself, and the same member with a NUL a few KB in
+/// was a 0 with matches in a `.tgz` and a clean 1 in a `.tar.zst`.
+struct FullReads<'a> {
+    inner: &'a mut dyn io::Read,
+    /// An error met after part of a buffer was read: that part goes out
+    /// first, and the error with the next call. Held here, not left to the
+    /// reader to repeat, because a decoder need not say it twice, and an
+    /// error lost here is a 1 about a member never read to its end.
+    pending: Option<io::Error>,
+}
+
+impl<'a> FullReads<'a> {
+    fn new(inner: &'a mut dyn io::Read) -> Self {
+        Self { inner, pending: None }
+    }
+}
+
+impl io::Read for FullReads<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(e) = self.pending.take() {
+            return Err(e);
+        }
+        let mut n = 0;
+        while n < buf.len() {
+            match self.inner.read(&mut buf[n..]) {
+                Ok(0) => break,
+                Ok(k) => n += k,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if n > 0 => {
+                    self.pending = Some(e);
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(n)
+    }
+}
+
 /// What one member's search concluded, beyond the bytes it printed.
 pub struct MemberVerdict {
     pub matched: bool,
@@ -358,7 +403,7 @@ fn search_member(
         ($p:expr) => {{
             let sink = $p.sink_with_path(m, display);
             let mut capped = MaxCount::new(sink, limit, separate);
-            let res = s.search_reader(m, r, &mut capped);
+            let res = s.search_reader(m, FullReads::new(&mut *r), &mut capped);
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.

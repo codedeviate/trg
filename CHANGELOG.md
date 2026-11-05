@@ -9,6 +9,14 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Fixed
+
+- A member with a NUL byte in its first 64 KB is now skipped as binary in
+  every format, as rg skips such a file. gzip and xz deliver data in short
+  reads, so in a `.tgz`, `.tar.xz` or `.gz` the lines before the NUL were
+  searched and printed, an exit 0, where the same member in a `.tar.zst`,
+  `.zip` or plain `.tar` was a 1.
+
 ## [0.14.0] - 2026-11-05
 
 ### Changed
