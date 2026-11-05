@@ -9,6 +9,8 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-05
+
 ### Fixed
 
 - With context on (`-A`, `-B`, `-C`), a `--` line now separates members and
@@ -420,7 +422,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/codedeviate/trg/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/codedeviate/trg/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/codedeviate/trg/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/codedeviate/trg/compare/v0.11.0...v0.11.1
