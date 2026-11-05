@@ -112,6 +112,11 @@ pub fn prepare(_f: &File, _drop_cache: bool) {}
 /// files: Apache holds live logs open for append, and evicting those pages
 /// would harm the very process this feature exists to protect. Compressed and
 /// tar inputs are cold and ours to drop.
+///
+/// `FADV_DONTNEED` drops clean pages only. An archive written moments ago,
+/// logrotate's newest, can still be dirty, and stays cached until the kernel
+/// writes it back. trg does not sync it: forcing writes on a busy server is
+/// worse than a few cached pages.
 #[cfg(target_os = "linux")]
 pub fn finish(f: &File, drop_cache: bool) {
     use std::os::unix::io::AsRawFd;

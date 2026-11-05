@@ -233,6 +233,11 @@ pub fn resident_pages(path: &std::path::Path) -> (usize, usize) {
 pub fn evict(path: &std::path::Path) {
     use std::os::unix::io::AsRawFd;
     let file = std::fs::File::open(path).unwrap();
+    // `FADV_DONTNEED` drops clean pages only, and a fixture written a moment
+    // ago is still dirty until writeback reaches it. Unsynced, the eviction
+    // here and trg's after the search both silently did nothing whenever
+    // writeback lagged, and the residency tests failed on CI now and then.
+    file.sync_data().unwrap();
     unsafe {
         libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
     }
