@@ -350,3 +350,22 @@ fn a_member_binary_in_its_first_buffer_is_skipped_in_every_format() {
         assert_eq!((out.as_str(), c), ("", Some(1)), "{}: {err}", f.path.display());
     }
 }
+
+/// A zip inside an archive is not opened, and its bytes read as binary, so
+/// it was skipped without a word. A note says so; the exit code stays what
+/// the rest of the archive earns.
+#[test]
+fn a_zip_inside_an_archive_gets_a_note() {
+    let inner = helpers::zip_bytes(&[("s.log", b"NEEDLE secret\n")], helpers::ZipMethod::Deflated);
+    let f = helpers::tgz("n.tgz", &[("logs/inner.zip", &inner), ("logs/a.log", b"nothing\n")]);
+    let p = f.path.to_str().unwrap();
+    let (out, err, c) = run(&["NEEDLE", p]);
+    assert_eq!(out, "");
+    assert_eq!(err.trim(), format!("trg: {p}:logs/inner.zip: a zip inside the archive; its entries are not searched"));
+    assert_eq!(c, Some(1));
+
+    // Only zips: a gzip member is opened and searched, and needs no note.
+    let g = helpers::tgz_nested_gz("g.tgz", "logs/a.log.gz", b"NEEDLE\n");
+    let (_, err, c) = run(&["NEEDLE", g.path.to_str().unwrap()]);
+    assert_eq!((err.as_str(), c), ("", Some(0)));
+}

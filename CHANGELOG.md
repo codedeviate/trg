@@ -16,6 +16,9 @@ How versions are chosen before 1.0.0 is described in
 
 ### Fixed
 
+- A zip inside an archive now gets a note on stderr saying its entries are
+  not searched. It read as binary and was skipped without a word, so a 1
+  said nothing about the logs inside it.
 - A member with a NUL byte in its first 64 KB is now skipped as binary in
   every format, as rg skips such a file. gzip and xz deliver data in short
   reads, so in a `.tgz`, `.tar.xz` or `.gz` the lines before the NUL were

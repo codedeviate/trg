@@ -339,11 +339,13 @@ struct FullReads<'a> {
     /// reader to repeat, because a decoder need not say it twice, and an
     /// error lost here is a 1 about a member never read to its end.
     pending: Option<io::Error>,
+    /// The member's first bytes, to tell a zip inside the archive.
+    head: Vec<u8>,
 }
 
 impl<'a> FullReads<'a> {
     fn new(inner: &'a mut dyn io::Read) -> Self {
-        Self { inner, pending: None }
+        Self { inner, pending: None, head: Vec::new() }
     }
 }
 
@@ -365,6 +367,10 @@ impl io::Read for FullReads<'_> {
                 Err(e) => return Err(e),
             }
         }
+        if self.head.len() < 8 {
+            let more = (8 - self.head.len()).min(n);
+            self.head.extend_from_slice(&buf[..more]);
+        }
         Ok(n)
     }
 }
@@ -378,6 +384,8 @@ pub struct MemberVerdict {
     pub printed: bool,
     /// With `--json`, the printer's statistics for the member.
     pub stats: Option<grep_printer::Stats>,
+    /// The member is itself a zip, whose entries were not searched.
+    pub zip: bool,
 }
 
 /// Search one member, returning whether it matched.
@@ -406,7 +414,9 @@ fn search_member(
         ($p:expr, |$sink:ident| $stats:expr) => {{
             let sink = $p.sink_with_path(m, display);
             let mut capped = MaxCount::new(sink, limit, separate);
-            let res = s.search_reader(m, FullReads::new(&mut *r), &mut capped);
+            let mut reads = FullReads::new(&mut *r);
+            let res = s.search_reader(m, &mut reads, &mut capped);
+            let zip = crate::sniff::sniff(&reads.head) == crate::sniff::Format::Zip;
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.
@@ -415,7 +425,7 @@ fn search_member(
             let printed = capped.printed();
             res.map_err(io::Error::other)?;
             let $sink = &capped.inner;
-            MemberVerdict { matched: hit, count_suppressed: suppressed, printed, stats: $stats }
+            MemberVerdict { matched: hit, count_suppressed: suppressed, printed, stats: $stats, zip }
         }};
     }
 
@@ -463,6 +473,12 @@ pub fn search_archive(
         // not change — it is rg-compatible, and the count really is unknown —
         // so the correction goes to stderr, where it costs a pipeline nothing
         // and an operator everything.
+        // Archives inside archives are not opened (OUT-OF-SCOPE.md), and a
+        // zip reads as binary, so it was skipped without a word: a 1 that
+        // says nothing about the logs inside it.
+        if v.zip {
+            notes.push(format!("{display}: a zip inside the archive; its entries are not searched"));
+        }
         if ctx.count_mode && v.count_suppressed {
             notes.push(format!("{display}: binary data; count suppressed"));
         }
