@@ -2,7 +2,7 @@
 //! Order is preserved because these archives are days, so argument order is
 //! chronological order.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
@@ -41,18 +41,78 @@ fn identity(p: &Path) -> Option<Identity> {
 /// order, across the whole run -- not just within one directory walk -- so
 /// `trg pat a.log a.log` and `trg pat dir/` (where `dir/` holds a file and a
 /// symlink to it) both search the underlying file exactly once.
-fn push_unique(items: &mut Vec<PathBuf>, seen: &mut HashSet<Identity>, p: PathBuf) {
+///
+/// A dropped occurrence is kept as an alias of the path that was searched:
+/// `-g` picks plain files by name, and the name it picks may be the one that
+/// was dropped (`current.log`, a symlink to `access.log.2026-11-05`).
+fn push_unique(
+    items: &mut Vec<PathBuf>,
+    seen: &mut HashMap<Identity, usize>,
+    aliases: &mut Aliases,
+    p: PathBuf,
+) {
     match identity(&p) {
-        Some(id) if !seen.insert(id) => {} // already seen: drop this occurrence
-        _ => items.push(p),
+        Some(id) => match seen.get(&id) {
+            Some(&i) => aliases.entry(items[i].clone()).or_default().push(p),
+            None => {
+                seen.insert(id, items.len());
+                items.push(p);
+            }
+        },
+        None => items.push(p),
     }
+}
+
+/// The other names a searched file was reached by, keyed by the name it was
+/// searched under.
+pub type Aliases = HashMap<PathBuf, Vec<PathBuf>>;
+
+/// Everything `resolve_all` found: the files to search, in order, the paths
+/// that failed, and the [`Aliases`].
+pub struct Resolved {
+    pub items: Vec<PathBuf>,
+    pub errors: Vec<String>,
+    pub aliases: Aliases,
 }
 
 pub fn resolve(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
     resolve_with(paths, None)
 }
 
-/// `resolve`, keeping only the walked files that `archive_globs` selects.
+pub fn resolve_with(
+    paths: &[PathBuf],
+    archive_globs: Option<&ArchiveGlobs>,
+) -> (Vec<PathBuf>, Vec<String>) {
+    let r = resolve_all(paths, archive_globs);
+    (r.items, r.errors)
+}
+
+/// The path `-g` judges a plain file by: relative to the current directory,
+/// as rg's are, so `logs`, `./logs` and `$PWD/logs` select the same files.
+/// Spelled as given, `-g 'logs/*.log' ./logs` kept nothing while `logs`
+/// kept everything.
+///
+/// The current directory comes back resolved (`/private/var/...` on macOS,
+/// where `/var` is a symlink), so an absolute path that does not start with
+/// it is tried again with its directory resolved. Only the directory: the
+/// file's own name is what `-g` asked about, symlink or not.
+pub fn glob_candidate(p: &Path) -> PathBuf {
+    let rel = match std::env::current_dir() {
+        Ok(cwd) if p.is_absolute() => match p.strip_prefix(&cwd) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => p
+                .parent()
+                .and_then(|d| std::fs::canonicalize(d).ok())
+                .and_then(|d| Some(d.strip_prefix(&cwd).ok()?.join(p.file_name()?)))
+                .unwrap_or_else(|| p.to_path_buf()),
+        },
+        _ => p.to_path_buf(),
+    };
+    rel.components().filter(|c| !matches!(c, std::path::Component::CurDir)).collect()
+}
+
+/// `resolve`, keeping only the walked files that `archive_globs` selects, and
+/// the other names each file was reached by.
 ///
 /// Files named on the command line are never filtered, as with `rg -g`: naming
 /// a file is a stronger statement than any pattern.
@@ -62,13 +122,11 @@ pub fn resolve(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
 /// was read and nothing matched, and a typo like `2026-8-*` would read as
 /// clean logs. It is judged across the whole run, so one directory without a
 /// match is normal when another has them.
-pub fn resolve_with(
-    paths: &[PathBuf],
-    archive_globs: Option<&ArchiveGlobs>,
-) -> (Vec<PathBuf>, Vec<String>) {
+pub fn resolve_all(paths: &[PathBuf], archive_globs: Option<&ArchiveGlobs>) -> Resolved {
     let mut items = Vec::new();
     let mut errors = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
+    let mut aliases = Aliases::new();
     let mut walked_any = false;
     let mut kept_any = false;
 
@@ -84,10 +142,10 @@ pub fn resolve_with(
                 kept_any |= !found.is_empty();
                 found.sort();
                 for f in found {
-                    push_unique(&mut items, &mut seen, f);
+                    push_unique(&mut items, &mut seen, &mut aliases, f);
                 }
             }
-            Ok(_) => push_unique(&mut items, &mut seen, p.clone()),
+            Ok(_) => push_unique(&mut items, &mut seen, &mut aliases, p.clone()),
         }
     }
 
@@ -95,7 +153,7 @@ pub fn resolve_with(
         errors.push("--archive-glob matched no files in the directories searched".to_string());
     }
 
-    (items, errors)
+    Resolved { items, errors, aliases }
 }
 
 /// How an ordered list of globs decides, the way ripgrep and `.gitignore`
@@ -266,10 +324,37 @@ fn walk(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
                     out.push(e.into_path());
                 }
             }
-            Err(e) => errors.push(format!("{}: {e}", root.display())),
+            Err(e) => errors.push(walk_error(root, &e)),
         }
     }
     out
+}
+
+/// A walk error, naming the path it is about once. `ignore`'s own text
+/// already holds the path, and twice over for an I/O error ("IO error for
+/// operation on x: ..."), so prefixed with the root it read
+/// `t1: t1/locked: IO error for operation on t1/locked: Permission denied`.
+fn walk_error(root: &Path, e: &ignore::Error) -> String {
+    // The path the error is about, if `ignore` attached one, and the text
+    // without it. An I/O error's own text is walkdir's, which names the path
+    // again, so it is rebuilt from the OS error behind it.
+    fn inner(e: &ignore::Error) -> (Option<&Path>, String) {
+        match e {
+            ignore::Error::WithPath { path, err } => (Some(path), inner(err).1),
+            ignore::Error::WithDepth { err, .. } | ignore::Error::WithLineNumber { err, .. } => inner(err),
+            ignore::Error::Io(io) => {
+                let cause = io.get_ref().and_then(std::error::Error::source);
+                (None, cause.map_or_else(|| io.to_string(), ToString::to_string))
+            }
+            // A loop names both of its paths in its own text.
+            ignore::Error::Loop { child, .. } => (Some(child), "a file system loop: it points to a directory above it".into()),
+            other => (None, other.to_string()),
+        }
+    }
+    match inner(e) {
+        (Some(path), text) => format!("{}: {text}", path.display()),
+        (None, text) => format!("{}: {text}", root.display()),
+    }
 }
 
 

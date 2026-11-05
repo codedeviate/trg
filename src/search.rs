@@ -2,7 +2,7 @@
 //! engine is ripgrep's, unmodified.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use grep_searcher::{
     BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
@@ -298,6 +298,8 @@ pub struct SearchCtx<'a> {
     /// already did that — only to decide whether a suppressed count is worth a
     /// note on stderr.
     pub count_mode: bool,
+    /// Other names of the files searched, for `-g` on plain files.
+    pub aliases: &'a crate::source::Aliases,
     /// `-m` and `-A`, when the sink enforces `-m`: see [`sink_limit`].
     pub sink_limit: Option<(u64, usize)>,
     /// `--` between members, as rg puts it between files: the default output
@@ -320,8 +322,18 @@ pub fn separates_members(o: &SearchOpts, mode: crate::print::Mode) -> bool {
 /// for plain (non-tar) files, which arrive here as a single member named `""`.
 /// Without this second half, a mixed sweep of live logs plus archives would
 /// ignore `-g` for every live log.
-fn excluded_plain_file(member: &str, path: &Path, globs: Option<&crate::source::Globs>) -> bool {
-    member.is_empty() && globs.is_some_and(|set| !set.is_match(path))
+///
+/// Returns the name to show it under, `None` when it is excluded. A plain file
+/// reached by several names (a symlink, a hardlink) was searched under the
+/// first, and `-g` may pick another: then it is searched, under that one.
+fn plain_name<'p>(member: &str, path: &'p Path, ctx: &'p SearchCtx<'_>) -> Option<&'p Path> {
+    let Some(set) = ctx.globs.filter(|_| member.is_empty()) else {
+        return Some(path);
+    };
+    let others = ctx.aliases.get(path).map(Vec::as_slice).unwrap_or_default();
+    std::iter::once(path)
+        .chain(others.iter().map(PathBuf::as_path))
+        .find(|p| set.is_match(crate::source::glob_candidate(p)))
 }
 
 /// Fills the searcher's buffer the way a plain file does: every read returns
@@ -454,10 +466,10 @@ pub fn search_archive(
     let mut stats: Option<grep_printer::Stats> = None;
     let mut notes: Vec<String> = Vec::new();
     let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
-        if excluded_plain_file(member, path, globs) {
+        let Some(shown) = plain_name(member, path, ctx) else {
             return Ok(crate::archive::Rest::Leave);
-        }
-        let display = display_path(path, member, sep);
+        };
+        let display = display_path(shown, member, sep);
         kept = true;
         let separate = ctx.separate && printed;
         let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
@@ -527,11 +539,11 @@ pub fn list_members(
 
     let mut listed = false;
     let mut outcome = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, _| {
-        if excluded_plain_file(member, path, globs) {
+        let Some(shown) = plain_name(member, path, ctx) else {
             return Ok(crate::archive::Rest::Leave);
-        }
+        };
         listed = true;
-        writeln!(out, "{}", display_path(path, member, sep))?;
+        writeln!(out, "{}", display_path(shown, member, sep))?;
         Ok(crate::archive::Rest::Leave)
     });
     // `-T` has no notion of a match, so "listed something" is what stands in

@@ -92,7 +92,8 @@ fn run() -> anyhow::Result<RunStatus> {
     let mut partial = false;
 
     let archive_globs = trg::source::build_archive_globs(&args.archive_globs)?;
-    let (items, path_errors) = trg::source::resolve_with(&args.paths, archive_globs.as_ref());
+    let trg::source::Resolved { items, errors: path_errors, aliases } =
+        trg::source::resolve_all(&args.paths, archive_globs.as_ref());
     let globs = trg::source::build_globs(&args.globs)?;
     for e in &path_errors {
         eprintln!("trg: {}", escape::for_stderr(&e.to_string()));
@@ -105,6 +106,7 @@ fn run() -> anyhow::Result<RunStatus> {
         globs: globs.as_ref(),
         drop_cache: args.drop_cache,
         count_mode: args.print.mode == print::Mode::Count,
+        aliases: &aliases,
         sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
         separate: search::separates_members(&args.search, args.print.mode),
     };

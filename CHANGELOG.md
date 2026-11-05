@@ -16,6 +16,19 @@ How versions are chosen before 1.0.0 is described in
 
 ### Fixed
 
+- A plain log truncated in place while trg reads it (logrotate's
+  `copytruncate`) is now an exit 2 saying it shrank. The read met the new
+  end of the file early, and a log whose match was in the lost part was a 1.
+- `-g` picks a plain file by any name it was reached by. A log and a symlink
+  or hardlink to it are searched once, under the first name the walk met,
+  and `-g` used to judge that name alone: `-g current.log` beside
+  `access.log.2026-11-05` searched nothing.
+- `-g` judges a plain file's path relative to the current directory, as rg
+  does, so `logs`, `./logs` and an absolute path select the same files.
+  `-g 'logs/*.log' ./logs` used to select none.
+- A directory walk's errors name the path once:
+  `t1/locked: Permission denied (os error 13)`, not
+  `t1: t1/locked: IO error for operation on t1/locked: Permission denied`.
 - A zip inside an archive now gets a note on stderr saying its entries are
   not searched. It read as binary and was skipped without a word, so a 1
   said nothing about the logs inside it.

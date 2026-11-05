@@ -138,16 +138,45 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read>> {
 /// An input, opened: a byte stream with its outer compression removed, or a
 /// zip, which is read by seeking and so cannot be one.
 enum Opened {
-    /// The stream, whether its format can detect its own truncation, and
-    /// whether it is compressed (and so has a checksum to read up to).
-    Stream(Box<dyn Read>, bool, bool),
+    /// The stream, whether its format can detect its own truncation,
+    /// whether it is compressed (and so has a checksum to read up to), and
+    /// for a plain file, how to tell that it shrank while it was read.
+    Stream(Box<dyn Read>, bool, bool, Option<Shrink>),
     /// The file, rewound, and the guard that drops its pages when the walk is
     /// over.
     Zip(File, CacheGuard),
 }
 
+/// A plain file's size when it was opened, and a handle sharing its read
+/// offset.
+///
+/// A live log can be truncated while trg reads it: logrotate's `copytruncate`
+/// empties it in place. The read then meets the end of the file early and
+/// looks like a whole file with no match, a 1 about lines never read. The
+/// offset says how far the read got; short of the size at open, after a
+/// search that read to the end, the file shrank under it.
+struct Shrink {
+    file: File,
+    size: u64,
+}
+
+impl Shrink {
+    fn check(&self) -> io::Result<()> {
+        let at = io::Seek::stream_position(&mut &self.file)?;
+        if at < self.size {
+            return Err(io::Error::other(format!(
+                "shrank while being read: {} bytes when opened, only {at} read \
+                 (truncated in place, as by logrotate's copytruncate?)",
+                self.size
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     let f = File::open(path)?;
+    let size = f.metadata()?.len();
     let dup = f.try_clone()?;
     let rdr = io::BufReader::with_capacity(64 * 1024, f);
     let (head, body) = peek(rdr)?;
@@ -162,6 +191,10 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     let guard = CacheGuard { file: dup, drop_cache };
 
     let unverified_end = format == Format::CompressZ;
+    let shrink = match format {
+        Format::Plain => Some(Shrink { file: guard.file.try_clone()?, size }),
+        _ => None,
+    };
     let stream = match format {
         Format::Gzip => Guarded::boxed(flate2::read::MultiGzDecoder::new(body), guard),
         // `zstd`'s reader is streaming like flate2's, so the bounded-memory
@@ -186,7 +219,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
         }
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     };
-    Ok(Opened::Stream(stream, unverified_end, format != Format::Tar && format != Format::Plain))
+    Ok(Opened::Stream(stream, unverified_end, format != Format::Tar && format != Format::Plain, shrink))
 }
 
 /// `.Z`, through stuffr's decoder.
@@ -236,9 +269,9 @@ where
     F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
     let mut out = match open_input(path, drop_cache) {
-        Ok(Opened::Stream(r, unverified_end, compressed)) => Outcome {
+        Ok(Opened::Stream(r, unverified_end, compressed, shrink)) => Outcome {
             unverified_end,
-            ..walk_stream(r, globs, compressed, f)
+            ..walk_stream(r, globs, compressed, shrink, f)
         },
         // The guard outlives the walk, so the pages go once it is over.
         Ok(Opened::Zip(file, _guard)) => for_each_zip_member(file, globs, f),
@@ -462,12 +495,18 @@ where
     R: Read,
     F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
-    walk_stream(rdr, globs, false, f)
+    walk_stream(rdr, globs, false, None, f)
 }
 
 /// [`for_each_member`], told whether `rdr` is a decoder, whose rest is read
 /// when a whole file that is not a tar asks for [`Rest::Verify`].
-fn walk_stream<R, F>(rdr: R, globs: Option<&crate::source::Globs>, compressed: bool, mut f: F) -> Outcome
+fn walk_stream<R, F>(
+    rdr: R,
+    globs: Option<&crate::source::Globs>,
+    compressed: bool,
+    shrink: Option<Shrink>,
+    mut f: F,
+) -> Outcome
 where
     R: Read,
     F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
@@ -485,9 +524,11 @@ where
     // Not a tar at all: the whole input is a single anonymous member.
     if sniff(&head) != Format::Tar {
         out.members_seen = 1;
-        let searched = f("", &mut body).and_then(|rest| match compressed {
-            true => finish(rest, &mut body),
-            false => Ok(()),
+        let searched = f("", &mut body).and_then(|rest| match (compressed, &shrink) {
+            (true, _) => finish(rest, &mut body),
+            // Read to its end with no match: all of it, unless it shrank.
+            (false, Some(s)) if rest == Rest::Verify => s.check(),
+            (false, _) => Ok(()),
         });
         match searched {
             Ok(()) => out.members_searched = 1,
@@ -583,5 +624,36 @@ impl<R: Read> Read for EndMark<R> {
             None => self.zeros + n as u64,
         };
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod shrink_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// A file truncated in place after it was opened, read to its new end:
+    /// short of the size at open, so not all of it was read.
+    #[test]
+    fn a_file_that_shrank_while_being_read_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("live.log");
+        std::fs::write(&p, vec![b'x'; 10_000]).unwrap();
+        let mut f = File::open(&p).unwrap();
+        let s = Shrink { file: f.try_clone().unwrap(), size: f.metadata().unwrap().len() };
+        let mut head = [0u8; 4096];
+        f.read_exact(&mut head).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(0).unwrap();
+        io::copy(&mut f, &mut io::sink()).unwrap();
+        let e = s.check().unwrap_err().to_string();
+        assert!(e.contains("10000 bytes when opened, only 4096 read"), "{e}");
+
+        // Read whole, or grown since: fine.
+        std::fs::write(&p, vec![b'x'; 100]).unwrap();
+        let mut f = File::open(&p).unwrap();
+        let s = Shrink { file: f.try_clone().unwrap(), size: 100 };
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"more").unwrap();
+        io::copy(&mut f, &mut io::sink()).unwrap();
+        s.check().unwrap();
     }
 }
