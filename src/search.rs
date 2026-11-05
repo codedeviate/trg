@@ -376,6 +376,8 @@ pub struct MemberVerdict {
     pub count_suppressed: bool,
     /// Any line was printed for it.
     pub printed: bool,
+    /// With `--json`, the printer's statistics for the member.
+    pub stats: Option<grep_printer::Stats>,
 }
 
 /// Search one member, returning whether it matched.
@@ -398,9 +400,10 @@ fn search_member(
 ) -> io::Result<MemberVerdict> {
     // The three printers have unrelated sink types, so the body is monomorphic
     // per arm; a macro keeps the one real sequence — build sink, cap it,
-    // search, ask it what it saw — written once.
+    // search, ask it what it saw — written once. `$stats` reads the sink's
+    // statistics, which only the JSON printer keeps.
     macro_rules! run {
-        ($p:expr) => {{
+        ($p:expr, |$sink:ident| $stats:expr) => {{
             let sink = $p.sink_with_path(m, display);
             let mut capped = MaxCount::new(sink, limit, separate);
             let res = s.search_reader(m, FullReads::new(&mut *r), &mut capped);
@@ -411,14 +414,15 @@ fn search_member(
             let suppressed = capped.count_suppressed_by_binary();
             let printed = capped.printed();
             res.map_err(io::Error::other)?;
-            MemberVerdict { matched: hit, count_suppressed: suppressed, printed }
+            let $sink = &capped.inner;
+            MemberVerdict { matched: hit, count_suppressed: suppressed, printed, stats: $stats }
         }};
     }
 
     Ok(match printer {
-        crate::print::Printer::Standard(p) => run!(p),
-        crate::print::Printer::Summary(p) => run!(p),
-        crate::print::Printer::Json(p) => run!(p),
+        crate::print::Printer::Standard(p) => run!(p, |_sink| None),
+        crate::print::Printer::Summary(p) => run!(p, |_sink| None),
+        crate::print::Printer::Json(p) => run!(p, |sink| Some(sink.stats().clone())),
     })
 }
 
@@ -437,6 +441,7 @@ pub fn search_archive(
     // writes it.
     let mut printed = false;
     let mut kept = false;
+    let mut stats: Option<grep_printer::Stats> = None;
     let mut notes: Vec<String> = Vec::new();
     let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
         if excluded_plain_file(member, path, globs) {
@@ -448,6 +453,9 @@ pub fn search_archive(
         let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
         matched |= v.matched;
         printed |= v.printed;
+        if let Some(st) = &v.stats {
+            *stats.get_or_insert_with(grep_printer::Stats::new) += st;
+        }
         // `-c` is otherwise the only mode that goes completely silent on a
         // member that matched and then hit binary data: stdout stays empty and
         // the exit code stays 0, so `n=$(trg -c PAT a.tgz)` yields '' and a
@@ -473,6 +481,7 @@ pub fn search_archive(
     }
     out.matched = matched;
     out.kept = kept;
+    out.stats = stats;
     out.notes = notes;
     out
 }

@@ -268,6 +268,28 @@ fn archive_sep_changes_the_separator() {
     assert!(out.contains("!logs/a.log:1:"), "got {out}");
 }
 
+/// As rg's, `--json` output ends with one summary record for the whole run,
+/// its statistics summed over every member of every archive.
+#[test]
+fn json_ends_with_a_summary_of_the_whole_run() {
+    let a = helpers::tgz("a.tgz", &[("x.log", b"NEEDLE\nno\n"), ("y.log", b"NEEDLE NEEDLE\n")]);
+    let b = helpers::tgz("b.tgz", &[("z.log", b"nothing\n")]);
+    let (out, err, c) = run(&["--json", "NEEDLE", a.path.to_str().unwrap(), b.path.to_str().unwrap()]);
+    assert_eq!(c, Some(0), "{err}");
+    let last = out.lines().last().unwrap();
+    assert_eq!(out.matches("\"type\":\"summary\"").count(), 1, "{out}");
+    assert!(last.starts_with("{\"data\":{\"elapsed_total\":"), "{last}");
+    for field in ["\"matched_lines\":2", "\"matches\":3", "\"searches\":3", "\"searches_with_match\":2"] {
+        assert!(last.contains(field), "{field} in {last}");
+    }
+    assert!(last.ends_with("\"type\":\"summary\"}"), "{last}");
+
+    // No match at all still ends with one, as in rg.
+    let (out, _, c) = run(&["--json", "absent", b.path.to_str().unwrap()]);
+    assert_eq!(c, Some(1));
+    assert!(out.trim_end().ends_with("\"type\":\"summary\"}"), "{out}");
+}
+
 #[test]
 fn json_mode_emits_json_lines() {
     let f = helpers::tgz("j.tgz", &[("logs/a.log", b"NEEDLE\n")]);

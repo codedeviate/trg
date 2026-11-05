@@ -11,8 +11,8 @@ between files included.
 trg follows rg 15. With an older rg, cases that combine -c and -o are skipped:
 rg 14 counted lines there, not matches, and reported 0 bytes_searched in
 JSON under -m, so that field is not compared. Also skipped or allowed:
-two output modes at once (each tool has its own precedence), rg's closing
-JSON summary, and -c on a member that matched and then hit binary data.
+two output modes at once (each tool has its own precedence), and -c on a
+member that matched and then hit binary data.
 Exits 1 on any difference; the inputs are kept in fail*/.
 """
 import io
@@ -74,14 +74,13 @@ def archive(names, bodies, fmt):
 
 
 def unjson(b):
-    """JSON Lines minus what cannot match: timings, and rg's closing summary
-    of the whole run, which trg does not write."""
+    """JSON Lines minus what cannot match: timings and printed byte counts."""
     def strip(v):
         if isinstance(v, dict):
             return {k: strip(x) for k, x in v.items() if k not in DROP}
         return [strip(x) for x in v] if isinstance(v, list) else v
     recs = [strip(json.loads(l)) for l in b.splitlines()]
-    return "\n".join(json.dumps(r, sort_keys=True) for r in recs if r["type"] != "summary").encode()
+    return "\n".join(json.dumps(r, sort_keys=True) for r in recs).encode()
 
 
 def text():

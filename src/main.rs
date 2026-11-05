@@ -109,6 +109,10 @@ fn run() -> anyhow::Result<RunStatus> {
         separate: search::separates_members(&args.search, args.print.mode),
     };
     let mut printed_any = false;
+    // `--json` ends with a summary record, as rg's does: the run's elapsed
+    // time and its statistics summed over every archive.
+    let started = std::time::Instant::now();
+    let mut stats = grep_printer::Stats::new();
     let mut kept_any = false;
     let mut read_any = false;
 
@@ -149,6 +153,9 @@ fn run() -> anyhow::Result<RunStatus> {
                 matched = true;
             }
             kept_any |= done.outcome.kept;
+            if let Some(st) = &done.outcome.stats {
+                stats += st;
+            }
             read_any |= done.outcome.errors.is_empty();
             // The `--` between archives; `search_archive` writes the ones
             // between members of one archive. In standard mode a non-empty
@@ -194,6 +201,28 @@ fn run() -> anyhow::Result<RunStatus> {
         eprintln!("trg: -g matched no members in the archives searched");
         partial = true;
     }
+
+    let written = written.and_then(|()| {
+        // Not for `-m 0` either: rg searches nothing then, and says nothing.
+        if args.print.mode != print::Mode::Json || args.list_members || args.search.max_count == Some(0) {
+            return Ok(());
+        }
+        let elapsed = started.elapsed();
+        let summary = serde_json::json!({
+            "type": "summary",
+            "data": {
+                "elapsed_total": {
+                    "secs": elapsed.as_secs(),
+                    "nanos": elapsed.subsec_nanos(),
+                    "human": format!("{:0.6}s", elapsed.as_secs_f64()),
+                },
+                "stats": stats,
+            },
+        });
+        let mut buf = bw.buffer();
+        std::io::Write::write_all(&mut buf, format!("{summary}\n").as_bytes())?;
+        bw.print(&buf)
+    });
 
     if let Err(e) = written {
         if e.kind() == std::io::ErrorKind::BrokenPipe {

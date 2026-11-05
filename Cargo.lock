@@ -839,6 +839,7 @@ dependencies = [
  "liblzma",
  "lz4_flex",
  "num_cpus",
+ "serde_json",
  "stuffr-core",
  "stuffr-formats",
  "tar",

@@ -40,6 +40,7 @@ libc = "0.2.189"
 liblzma = { version = "0.4.9", default-features = false, features = ["static"] }
 lz4_flex = "0.14.0"
 num_cpus = "1.17.0"
+serde_json = "1.0.151"
 stuffr-core = "0.23.0"
 stuffr-formats = { version = "0.23.0", default-features = false, features = ["zip", "compress"] }
 tar = "0.4.46"

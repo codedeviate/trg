@@ -9,6 +9,11 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- `--json` output ends with a `summary` record, as rg's does: the run's
+  elapsed time and its statistics summed over every member searched.
+
 ### Fixed
 
 - A member with a NUL byte in its first 64 KB is now skipped as binary in

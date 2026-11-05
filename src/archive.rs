@@ -41,6 +41,9 @@ pub struct Outcome {
     /// Whether any member got past `-g` (and, for a plain file, its path past
     /// `-g`). Set by the caller, which applies the plain-file half.
     pub kept: bool,
+    /// With `--json`, the printer's statistics summed over the members, for
+    /// the closing summary record.
+    pub stats: Option<grep_printer::Stats>,
 }
 
 /// Drops an archive's page-cache footprint when the reader that owns it dies.
