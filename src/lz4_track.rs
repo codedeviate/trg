@@ -7,7 +7,9 @@
 //! blocks therefore decoded cleanly to a shorter file, and a search of it was
 //! an exit 1 about data never read. This reader passes every byte through
 //! unchanged and only follows the framing, so the caller can ask, once the
-//! input is exhausted, whether it ended between frames.
+//! input is exhausted, whether it ended between frames. Reported upstream
+//! as <https://github.com/PSeitz/lz4_flex/issues/246>; once fixed, this
+//! module can go.
 
 use std::io::{self, Read};
 

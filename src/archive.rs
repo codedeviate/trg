@@ -373,7 +373,8 @@ fn lz4_decoder<R: Read>(head: &[u8], mut r: R) -> io::Result<Lz4Frames<R>> {
 ///
 /// lz4_flex also reports end-of-file when the input ends between two blocks
 /// of an unfinished frame, so at the end of the input the framing is checked
-/// too: a stream cut off mid-frame is an error, not a shorter file.
+/// too: a stream cut off mid-frame is an error, not a shorter file
+/// (<https://github.com/PSeitz/lz4_flex/issues/246>).
 struct Lz4Frames<R: Read>(lz4_flex::frame::FrameDecoder<io::BufReader<crate::lz4_track::Lz4Track<R>>>);
 
 impl<R: Read> Read for Lz4Frames<R> {

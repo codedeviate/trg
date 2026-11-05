@@ -60,7 +60,8 @@ pub fn build_matcher(
     // the other way round the matcher had none. That sent every search down
     // the searcher's slow line-by-line path, where `-v -m N -A k` printed
     // every line after the limit as a match (a grep-searcher bug rg also
-    // hits, with `\A` patterns). `crlf(true)` sets `\r\n` itself.
+    // hits, with `\A` patterns: ripgrep#3593). `crlf(true)` sets `\r\n`
+    // itself.
     let mut b = grep_regex::RegexMatcherBuilder::new();
     b.case_insensitive(o.case_insensitive)
         .case_smart(o.smart_case)
@@ -105,6 +106,8 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
 /// read buffer, which streamed members do all the time: every line after the
 /// limit came out as a match. rg 15.2 does the same reading a pipe. With no
 /// limit of its own, the searcher tells matches from context right.
+/// Reported upstream as <https://github.com/BurntSushi/ripgrep/issues/3593>;
+/// once fixed, this and the limit in [`MaxCount`] can go.
 pub fn sink_limit(o: &SearchOpts) -> Option<u64> {
     o.max_count.filter(|_| o.invert && o.after > 0)
 }
