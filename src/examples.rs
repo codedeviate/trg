@@ -247,6 +247,13 @@ pub const SECTIONS: &[Section] = &[
                 says: "Several globs: the last one that matches a member decides. So \
                        every .log except worker.log.",
             },
+            Example {
+                cmd: "trg -g 'eror.log' 'Timeout' logs/",
+                exit: 2,
+                says: "A -g that keeps no member in the whole run is a 2, not a clean \
+                       1: a typo searched nothing. One archive with no such member, \
+                       beside others that have one, is fine.",
+            },
         ],
     },
     Section {

@@ -29,7 +29,11 @@ fn plain_file_not_matching_glob_is_not_searched() {
     let p = dir.path().join("x.error.log");
     std::fs::write(&p, b"NEEDLE plain\n").unwrap();
 
-    let out = run(&["-g", "*.access.log", "NEEDLE", p.to_str().unwrap()]);
+    // Beside a file `-g` keeps, so the run is a clean 1 rather than the 2 of
+    // a `-g` that kept nothing at all.
+    let q = dir.path().join("x.access.log");
+    std::fs::write(&q, b"nothing\n").unwrap();
+    let out = run(&["-g", "*.access.log", "NEEDLE", p.to_str().unwrap(), q.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1), "expected no-match exit code, got: {out:?}");
     assert!(String::from_utf8_lossy(&out.stdout).is_empty());
 }

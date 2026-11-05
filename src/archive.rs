@@ -18,7 +18,8 @@ use crate::sniff::{sniff, Format, SNIFF_LEN};
 /// an archive whose members are all excluded by `-g` yields `seen = 2,
 /// searched = 0, errors = []`, and it was read completely. (`members_searched`
 /// also counts a glob-skipped plain file as searched, so it is not a sound
-/// basis for anything.)
+/// basis for anything.) That one archive is a clean 1; a whole run in which
+/// `-g` kept nothing is a 2, decided in `main` from `kept`.
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub members_seen: usize,
@@ -37,6 +38,9 @@ pub struct Outcome {
     /// [`walk_archive`]; what to say about it is the caller's, since only
     /// the caller knows whether anything matched.
     pub unverified_end: bool,
+    /// Whether any member got past `-g` (and, for a plain file, its path past
+    /// `-g`). Set by the caller, which applies the plain-file half.
+    pub kept: bool,
 }
 
 /// Drops an archive's page-cache footprint when the reader that owns it dies.

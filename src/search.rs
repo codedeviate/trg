@@ -388,12 +388,14 @@ pub fn search_archive(
     // first that print get a `--` ahead of them. Between archives, `main`
     // writes it.
     let mut printed = false;
+    let mut kept = false;
     let mut notes: Vec<String> = Vec::new();
     let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
         if excluded_plain_file(member, path, globs) {
             return Ok(crate::archive::Rest::Leave);
         }
         let display = display_path(path, member, sep);
+        kept = true;
         let separate = ctx.separate && printed;
         let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
         matched |= v.matched;
@@ -422,6 +424,7 @@ pub fn search_archive(
         ));
     }
     out.matched = matched;
+    out.kept = kept;
     out.notes = notes;
     out
 }
@@ -462,5 +465,6 @@ pub fn list_members(
     // for it: `trg -T ... ; echo $?` should say 1 when an archive held nothing
     // the globs would accept, the same shape of answer as a search.
     outcome.matched = listed;
+    outcome.kept = listed;
     outcome
 }

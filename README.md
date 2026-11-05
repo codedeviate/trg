@@ -181,7 +181,7 @@ across a month of archives.
 |---|---|
 | `0` | matches found, everything was read |
 | `1` | no matches, everything was read |
-| `2` | something went unread — an error, a truncated archive, no `PATH`, or an `--archive-glob` that matched nothing |
+| `2` | something went unread — an error, a truncated archive, no `PATH`, an `--archive-glob` that matched nothing, or a `-g` that kept no member |
 
 A `1` is a claim that the logs are clean, so `trg` only gives one when it read
 everything. Never trust a `1` you did not get.

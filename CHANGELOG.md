@@ -9,6 +9,15 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a `-g` that keeps no member in the whole run is now an exit
+  2, with `trg: -g matched no members in the archives searched`, as an
+  `--archive-glob` that matches nothing already was. A typo such as
+  `-g acess.log` used to be a 1, which reads as "the logs are clean". An
+  archive with no member past `-g` beside others that have one is still fine.
+  `-T` follows the same rule.
+
 ## [0.13.1] - 2026-11-05
 
 ### Fixed

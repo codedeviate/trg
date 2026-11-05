@@ -63,13 +63,14 @@ fn list_members_respects_globs_and_searches_nothing() {
     assert!(!out.contains(":1:"), "-T must not print match lines: {out}");
 }
 
+/// Listed nothing because `-g` kept nothing: a 2, as for a search.
 #[test]
-fn list_members_with_no_members_is_a_clean_one() {
+fn list_members_with_no_member_past_the_globs_is_a_two() {
     let f = helpers::tgz("le.tgz", &[("logs/a.log", b"whatever\n")]);
     let (out, err, c) = run(&["-T", "-g", "*.nomatch", f.path.to_str().unwrap()]);
     assert!(out.is_empty(), "got {out}");
-    assert!(err.is_empty(), "got {err}");
-    assert_eq!(c, Some(1));
+    assert!(err.contains("-g matched no members"), "got {err}");
+    assert_eq!(c, Some(2));
 }
 
 /// `-T` answers a question about the tar headers, so it needs no pattern —

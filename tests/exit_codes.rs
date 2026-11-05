@@ -181,18 +181,40 @@ fn every_mode_agrees_about_a_match_that_ends_in_binary_data() {
     }
 }
 
-/// `members_searched == 0` is NOT a partial-run signal: an archive whose
-/// members are all filtered out by `-g` was read completely and found nothing.
+/// `members_searched == 0` is NOT a partial-run signal for one archive: an
+/// archive whose members are all filtered out by `-g` was read completely, and
+/// beside one where `-g` kept a member, the run is a clean 1.
 #[test]
 fn an_archive_fully_filtered_out_by_globs_is_a_clean_one() {
     let f = helpers::tgz(
         "gf.tgz",
         &[("logs/a.log", b"NEEDLE\n"), ("logs/b.log", b"NEEDLE\n")],
     );
-    let (out, err, code) = run(&["-g", "*.nomatch", "NEEDLE", f.path.to_str().unwrap()]);
-    assert!(out.is_empty(), "nothing matched the glob: {out}");
+    let kept = helpers::tgz("gk.tgz", &[("logs/a.access.log", b"nothing\n")]);
+    let (p, k) = (f.path.to_str().unwrap(), kept.path.to_str().unwrap());
+    let (out, err, code) = run(&["-g", "*.access.log", "NEEDLE", p, k]);
+    assert!(out.is_empty(), "nothing matched: {out}");
     assert!(err.is_empty(), "a filtered-out archive is not an error: {err}");
     assert_eq!(code, Some(1), "seen=2 searched=0 errors=[] is a clean 1, not a 2");
+}
+
+/// But `-g` that keeps nothing in the whole run is a 2, as `--archive-glob`
+/// matching no files is: `-g acess.log` searched nothing, and a 1 would call
+/// the logs clean.
+#[test]
+fn globs_that_keep_no_member_in_the_whole_run_are_a_two() {
+    let f = helpers::tgz("gn.tgz", &[("logs/access.log", b"NEEDLE\n")]);
+    let p = f.path.to_str().unwrap();
+    for args in [&["-g", "acess.log", "NEEDLE", p][..], &["-T", "-g", "acess.log", p], &["-c", "-g", "!*.log", "NEEDLE", p]] {
+        let (out, err, code) = run(args);
+        assert!(out.is_empty(), "{args:?}: {out}");
+        assert_eq!(err.trim(), "trg: -g matched no members in the archives searched", "{args:?}");
+        assert_eq!(code, Some(2), "{args:?}");
+    }
+    // An archive that could not be read says so itself; no -g message on top.
+    let (_, err, code) = run(&["-g", "acess.log", "NEEDLE", "/nonexistent.tgz"]);
+    assert!(!err.contains("-g matched"), "{err}");
+    assert_eq!(code, Some(2));
 }
 
 /// A usage error means **nothing was read**. Reporting that as 1 would be

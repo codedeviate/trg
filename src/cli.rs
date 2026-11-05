@@ -54,7 +54,8 @@ OUTPUT (same meaning as ripgrep):
 ARCHIVES:
     -g, --glob PAT        filter MEMBERS inside archives; repeatable. Without
                           a `/` it also matches the member's file name. A
-                          leading ! excludes; the last matching glob wins
+                          leading ! excludes; the last matching glob wins.
+                          Keeping no member in the whole run is exit 2
         --archive-glob PAT
                           when walking a directory, search only the archives
                           matching PAT; repeatable. Without a `/` it matches

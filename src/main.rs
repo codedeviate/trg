@@ -109,6 +109,8 @@ fn run() -> anyhow::Result<RunStatus> {
         separate: search::separates_members(&args.search, args.print.mode),
     };
     let mut printed_any = false;
+    let mut kept_any = false;
+    let mut read_any = false;
 
     let jobs: Vec<trg::sched::Job> = items
         .iter()
@@ -146,6 +148,8 @@ fn run() -> anyhow::Result<RunStatus> {
             if done.outcome.matched {
                 matched = true;
             }
+            kept_any |= done.outcome.kept;
+            read_any |= done.outcome.errors.is_empty();
             // The `--` between archives; `search_archive` writes the ones
             // between members of one archive. In standard mode a non-empty
             // buffer holds lines, never a lone binary-file notice without a
@@ -169,10 +173,11 @@ fn run() -> anyhow::Result<RunStatus> {
             // stderr is usually still attached, and it is where the diagnosis
             // lives.
             //
-            // `errors` being non-empty is the *only* partial-run signal. Not
-            // `members_searched == 0`, and not `members_seen != members_searched`
-            // — an archive filtered down to nothing by `-g` was read in full and
-            // is a clean 1.
+            // `errors` being non-empty is the *only* per-archive partial-run
+            // signal. Not `members_searched == 0`, and not `members_seen !=
+            // members_searched`: one archive filtered down to nothing by `-g`
+            // was read in full and is a clean 1. A whole run of them is not,
+            // below.
             for e in &done.outcome.errors {
                 eprintln!("trg: {}", escape::for_stderr(e));
                 partial = true;
@@ -180,6 +185,15 @@ fn run() -> anyhow::Result<RunStatus> {
             r
         },
     );
+
+    // `-g` that kept nothing in the whole run is a 2, as `--archive-glob`
+    // matching no files is. A typo such as `-g acess.log` searched nothing,
+    // and a 1 would report the logs clean. Only once some archive was read
+    // through: when every one failed, its own error is the whole story.
+    if globs.is_some() && read_any && !kept_any {
+        eprintln!("trg: -g matched no members in the archives searched");
+        partial = true;
+    }
 
     if let Err(e) = written {
         if e.kind() == std::io::ErrorKind::BrokenPipe {
