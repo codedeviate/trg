@@ -9,7 +9,8 @@ between files included.
     python3 bench/torture/diff.py [N] [SEED]     # default 1000, 1
 
 trg follows rg 15. With an older rg, cases that combine -c and -o are skipped:
-rg 14 counted lines there, not matches. Also skipped or allowed, as decided:
+rg 14 counted lines there, not matches, and reported 0 bytes_searched in
+JSON under -m, so that field is not compared. Also skipped or allowed:
 two output modes at once (each tool has its own precedence), rg's closing
 JSON summary, and -c on a member that matched and then hit binary data.
 Exits 1 on any difference; the inputs are kept in fail*/.
@@ -62,10 +63,13 @@ def archive(names, bodies, fmt):
             ti = tarfile.TarInfo(name)
             ti.size = len(body)
             t.addfile(ti, io.BytesIO(body))
-    tool = {"tar.zst": ["zstd", "-q", "--rm"], "tar.lz4": ["lz4", "-q", "--rm"], "tar.Z": ["compress", "-f"]}
+    # Output named explicitly: lz4 writes to stdout when stdout is a pipe.
+    tool = {"tar.zst": ["zstd", "-q", "a.tar", "-o"], "tar.lz4": ["lz4", "-q", "a.tar"],
+            "tar.Z": ["sh", "-c", "compress -c a.tar > \"$0\""]}
     if fmt in tool:
-        subprocess.run(tool[fmt] + ["a.tar"], check=True)
         out = "a." + fmt
+        subprocess.run(tool[fmt] + [out], check=True)
+        os.remove("a.tar")
     return out
 
 
@@ -74,7 +78,7 @@ def unjson(b):
     of the whole run, which trg does not write."""
     def strip(v):
         if isinstance(v, dict):
-            return {k: strip(x) for k, x in v.items() if k not in ("elapsed", "elapsed_total", "bytes_printed")}
+            return {k: strip(x) for k, x in v.items() if k not in DROP}
         return [strip(x) for x in v] if isinstance(v, list) else v
     recs = [strip(json.loads(l)) for l in b.splitlines()]
     return "\n".join(json.dumps(r, sort_keys=True) for r in recs if r["type"] != "summary").encode()
@@ -99,8 +103,11 @@ def text():
 
 
 old_rg = int(subprocess.run(["rg", "--version"], capture_output=True, text=True).stdout.split()[1].split(".")[0]) < 15
+# Timings, and bytes_printed, which counts trg's longer archive:member paths.
+DROP = {"elapsed", "elapsed_total", "bytes_printed"}
 if old_rg:
-    print("rg older than 15: skipping -c with -o")
+    print("rg older than 15: skipping -c with -o, and JSON bytes_searched under -m")
+    DROP.add("bytes_searched")
 fails = 0
 for it in range(N):
     # In a directory rg walks, as members are files trg finds rather than
