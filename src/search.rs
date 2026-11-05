@@ -125,11 +125,33 @@ pub struct MaxCount<S> {
     /// refused unforwarded: the searcher's fast path takes a sink's `false`
     /// for the end of one loop and goes on to look for after-context.
     left: Option<usize>,
+    /// Print `--` before this member's first line, as rg does between files
+    /// when context is on. Written through the printer's own `context_break`,
+    /// so it is the same separator a gap inside one member gets.
+    separate: bool,
+    /// Whether any line went to the printer for this member.
+    printed: bool,
 }
 
 impl<S: Sink> MaxCount<S> {
-    pub fn new(inner: S, limit: Option<(u64, usize)>) -> Self {
-        Self { inner, seen: 0, binary_at: None, limit, left: None }
+    pub fn new(inner: S, limit: Option<(u64, usize)>, separate: bool) -> Self {
+        Self { inner, seen: 0, binary_at: None, limit, left: None, separate, printed: false }
+    }
+
+    /// Whether any line was printed for this member.
+    pub fn printed(&self) -> bool {
+        self.printed
+    }
+
+    /// Called before every line goes to the printer.
+    fn before_line(&mut self, s: &Searcher) -> Result<(), S::Error> {
+        if !self.printed {
+            self.printed = true;
+            if self.separate {
+                self.inner.context_break(s)?;
+            }
+        }
+        Ok(())
     }
 
     fn done(&self) -> bool {
@@ -191,6 +213,7 @@ impl<S: Sink> Sink for MaxCount<S> {
         if self.done() {
             return Ok(false);
         }
+        self.before_line(s)?;
         if self.left.is_some() {
             let more = self.inner.matched(s, m)?;
             return Ok(self.past_limit(more));
@@ -210,6 +233,7 @@ impl<S: Sink> Sink for MaxCount<S> {
         if self.done() {
             return Ok(false);
         }
+        self.before_line(s)?;
         let more = self.inner.context(s, c)?;
         Ok(self.past_limit(more))
     }
@@ -234,6 +258,7 @@ impl<S: Sink> Sink for MaxCount<S> {
         self.seen = 0;
         self.binary_at = None;
         self.left = None;
+        self.printed = false;
         self.inner.begin(s)
     }
 
@@ -272,6 +297,16 @@ pub struct SearchCtx<'a> {
     pub count_mode: bool,
     /// `-m` and `-A`, when the sink enforces `-m`: see [`sink_limit`].
     pub sink_limit: Option<(u64, usize)>,
+    /// `--` between members, as rg puts it between files: the default output
+    /// with context on. See [`separates_members`].
+    pub separate: bool,
+}
+
+/// Whether the output puts `--` between members, as rg does between files.
+/// Without it, `-C` output from two members runs together, and the last
+/// lines of one read as the context of the first match in the next.
+pub fn separates_members(o: &SearchOpts, mode: crate::print::Mode) -> bool {
+    mode == crate::print::Mode::Standard && (o.before > 0 || o.after > 0)
 }
 
 /// Whether `-g` excludes this input, for the one case `for_each_member` cannot
@@ -291,6 +326,8 @@ pub struct MemberVerdict {
     pub matched: bool,
     /// The member matched but `-c` printed no count line for it.
     pub count_suppressed: bool,
+    /// Any line was printed for it.
+    pub printed: bool,
 }
 
 /// Search one member, returning whether it matched.
@@ -309,6 +346,7 @@ fn search_member(
     r: &mut dyn io::Read,
     display: &str,
     limit: Option<(u64, usize)>,
+    separate: bool,
 ) -> io::Result<MemberVerdict> {
     // The three printers have unrelated sink types, so the body is monomorphic
     // per arm; a macro keeps the one real sequence — build sink, cap it,
@@ -316,15 +354,16 @@ fn search_member(
     macro_rules! run {
         ($p:expr) => {{
             let sink = $p.sink_with_path(m, display);
-            let mut capped = MaxCount::new(sink, limit);
+            let mut capped = MaxCount::new(sink, limit, separate);
             let res = s.search_reader(m, r, &mut capped);
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.
             let hit = capped.saw_match();
             let suppressed = capped.count_suppressed_by_binary();
+            let printed = capped.printed();
             res.map_err(io::Error::other)?;
-            MemberVerdict { matched: hit, count_suppressed: suppressed }
+            MemberVerdict { matched: hit, count_suppressed: suppressed, printed }
         }};
     }
 
@@ -345,14 +384,20 @@ pub fn search_archive(
     let (m, sep, globs) = (ctx.matcher, ctx.sep, ctx.globs);
 
     let mut matched = false;
+    // Whether this archive has printed a line yet: the members after the
+    // first that print get a `--` ahead of them. Between archives, `main`
+    // writes it.
+    let mut printed = false;
     let mut notes: Vec<String> = Vec::new();
     let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
         if excluded_plain_file(member, path, globs) {
             return Ok(crate::archive::Rest::Leave);
         }
         let display = display_path(path, member, sep);
-        let v = search_member(printer, m, s, r, &display, ctx.sink_limit)?;
+        let separate = ctx.separate && printed;
+        let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
         matched |= v.matched;
+        printed |= v.printed;
         // `-c` is otherwise the only mode that goes completely silent on a
         // member that matched and then hit binary data: stdout stays empty and
         // the exit code stays 0, so `n=$(trg -c PAT a.tgz)` yields '' and a

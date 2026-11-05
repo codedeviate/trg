@@ -9,6 +9,17 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Fixed
+
+- With context on (`-A`, `-B`, `-C`), a `--` line now separates members and
+  archives, as rg separates files. The last lines of one member no longer
+  read as context for the first match in the next.
+- `--load-limit` rejects `nan`, `inf` and negative values as usage errors
+  (exit 2). `nan` never throttled.
+- A bad number for `-m`, `-A`, `-B`, `-C`, `-j` or `--nice` names the option
+  and gives the reason once: `--max-count expects a number, got '-1': invalid
+  digit found in string`.
+
 ## [0.13.0] - 2026-11-02
 
 ### Added

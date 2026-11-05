@@ -106,7 +106,9 @@ fn run() -> anyhow::Result<RunStatus> {
         drop_cache: args.drop_cache,
         count_mode: args.print.mode == print::Mode::Count,
         sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
+        separate: search::separates_members(&args.search, args.print.mode),
     };
+    let mut printed_any = false;
 
     let jobs: Vec<trg::sched::Job> = items
         .iter()
@@ -144,7 +146,19 @@ fn run() -> anyhow::Result<RunStatus> {
             if done.outcome.matched {
                 matched = true;
             }
-            let r = bw.print(&done.buffer);
+            // The `--` between archives; `search_archive` writes the ones
+            // between members of one archive. In standard mode a non-empty
+            // buffer holds lines, never a lone binary-file notice without a
+            // match before it.
+            let mut r = Ok(());
+            if ctx.separate && !done.buffer.is_empty() {
+                if printed_any {
+                    let mut sep = bw.buffer();
+                    r = std::io::Write::write_all(&mut sep, b"--\n").and_then(|()| bw.print(&sep));
+                }
+                printed_any = true;
+            }
+            let r = r.and_then(|()| bw.print(&done.buffer));
             // Notes ride the same ordered path as errors so a sorted run says
             // the same thing twice in a row, but they leave `partial` alone:
             // nothing went unread, so the exit code is not theirs to change.

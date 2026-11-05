@@ -187,6 +187,20 @@ fn parse_size(s: &str) -> anyhow::Result<u64> {
         .ok_or_else(|| anyhow::anyhow!("--inflate-budget value too large: {s}"))
 }
 
+/// The next value as a number, with an error that names the option and says
+/// what was wrong once. lexopt's own `parse` error carries the cause in its
+/// message and again as its `source`, and `{:#}` printed both: "invalid digit
+/// found in string: invalid digit found in string".
+fn number<T>(p: &mut lexopt::Parser, flag: &str) -> anyhow::Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    use lexopt::prelude::ValueExt;
+    let v = p.value()?.string()?;
+    v.parse().map_err(|e| anyhow::anyhow!("{flag} expects a number, got '{v}': {e}"))
+}
+
 fn deprecate(a: &mut Args, flag: &'static str) {
     if !a.deprecated.contains(&flag) {
         a.deprecated.push(flag);
@@ -235,19 +249,19 @@ where
             Short('v') | Long("invert-match") => a.search.invert = true,
             Short('a') | Long("text") => a.search.text = true,
             Short('m') | Long("max-count") => {
-                a.search.max_count = Some(p.value()?.parse()?)
+                a.search.max_count = Some(number(&mut p, "--max-count")?)
             }
             Long("crlf") => a.search.crlf = true,
 
             Short('n') | Long("line-number") => a.search.line_numbers = true,
             Short('N') | Long("no-line-number") => a.search.line_numbers = false,
             Short('A') | Long("after") | Long("after-context") => {
-                after = Some(p.value()?.parse()?)
+                after = Some(number(&mut p, "--after-context")?)
             }
             Short('B') | Long("before") | Long("before-context") => {
-                before = Some(p.value()?.parse()?)
+                before = Some(number(&mut p, "--before-context")?)
             }
-            Short('C') | Long("context") => ctx_both = Some(p.value()?.parse()?),
+            Short('C') | Long("context") => ctx_both = Some(number(&mut p, "--context")?),
             Short('o') | Long("only-matching") => a.print.only_matching = true,
             Short('c') | Long("count") => a.count = true,
             Short('l') | Long("files-with-matches") => a.files_with_matches = true,
@@ -274,7 +288,8 @@ where
             Long("archive-glob") => a.archive_globs.push(p.value()?.string()?),
             Short('T') | Long("list-members") => a.list_members = true,
             Long("archive-sep") => {
-                let v = p.value()?.string()?;
+                use lexopt::prelude::ValueExt;
+    let v = p.value()?.string()?;
                 let mut it = v.chars();
                 match (it.next(), it.next()) {
                     (Some(c), None) => a.archive_sep = c,
@@ -284,7 +299,7 @@ where
             Long("no-sort") => a.sort = false,
 
             Short('j') | Long("jobs") => {
-                a.jobs = p.value()?.parse()?;
+                a.jobs = number(&mut p, "--jobs")?;
                 explicit_jobs = true;
             }
             Long("turbo") => {
@@ -292,7 +307,7 @@ where
                 if !explicit_nice { a.nice = Some(0); }
             }
             Long("nice") => {
-                a.nice = Some(p.value()?.parse()?);
+                a.nice = Some(number(&mut p, "--nice")?);
                 explicit_nice = true;
             }
             Long("no-nice") => {
@@ -315,7 +330,19 @@ where
                 parse_size(&p.value()?.string()?)?;
                 deprecate(&mut a, "--inflate-budget");
             }
-            Long("load-limit") => a.load_limit = Some(p.value()?.parse()?),
+            Long("load-limit") => {
+                let v = p.value()?.string()?;
+                let n: f64 = v.parse().map_err(|e| {
+                    anyhow::anyhow!("--load-limit expects a number, got '{v}': {e}")
+                })?;
+                // `f64` parses `nan`, `inf` and negatives, none of them a
+                // load average: `nan` compared false against every load and
+                // never throttled, a negative one always did.
+                if !(n.is_finite() && n >= 0.0) {
+                    anyhow::bail!("--load-limit expects a load average of 0 or more, got '{v}'");
+                }
+                a.load_limit = Some(n);
+            }
 
             Short('h') | Long("help") => {
                 print!("{HELP}");
@@ -491,6 +518,27 @@ mod tests {
         let argv: Vec<std::ffi::OsString> =
             ["trg", "--nonsense", "pat", "f.tgz"].iter().map(|s| s.into()).collect();
         assert!(parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn a_bad_number_names_the_option_and_says_why_once() {
+        let e = err(&["-m", "-1", "p", "f"]);
+        assert_eq!(e, "--max-count expects a number, got '-1': invalid digit found in string");
+        for flag in ["-A", "-B", "-C", "-j", "--nice"] {
+            let e = err(&[flag, "x", "p", "f"]);
+            assert_eq!(e.matches("invalid").count(), 1, "{flag}: {e}");
+        }
+    }
+
+    #[test]
+    fn load_limit_takes_a_load_average_and_nothing_else() {
+        for bad in ["nan", "-1", "inf", "-inf", "two"] {
+            let e = err(&["--load-limit", bad, "p", "f"]);
+            assert!(e.starts_with("--load-limit expects a"), "{bad}: {e}");
+            assert!(e.contains(&format!("'{bad}'")), "{bad}: {e}");
+        }
+        assert_eq!(p(&["--load-limit", "0", "p", "f"]).load_limit, Some(0.0));
+        assert_eq!(p(&["--load-limit", "2.5", "p", "f"]).load_limit, Some(2.5));
     }
 
     #[test]

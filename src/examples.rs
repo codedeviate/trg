@@ -291,7 +291,8 @@ pub const SECTIONS: &[Section] = &[
             Example {
                 cmd: "trg -C 2 'PHP Fatal' logs/",
                 exit: 0,
-                says: "Two lines of context before and after each hit.",
+                says: "Two lines of context before and after each hit, and -- between \
+                       groups and between members, as rg puts it between files.",
             },
             Example {
                 cmd: "trg -B 3 -A 1 'Segmentation fault' logs/",

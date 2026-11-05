@@ -228,6 +228,38 @@ fn invert_max_count_with_after_context_stops_after_the_context() {
     }
 }
 
+/// As rg puts `--` between files when context is on: between members of one
+/// archive and between archives, never before the first line, and only for
+/// members that printed something.
+#[test]
+fn context_puts_a_separator_between_members_and_archives() {
+    let a = helpers::tgz(
+        "a.tgz",
+        &[("x.log", b"a\nNEEDLE\n"), ("quiet.log", b"nothing\n"), ("y.log", b"NEEDLE\nb\n")],
+    );
+    let b = helpers::tgz("b.tgz", &[("z.log", b"NEEDLE\n")]);
+    let (pa, pb) = (a.path.to_str().unwrap(), b.path.to_str().unwrap());
+    let (out, err, c) = run(&["-j", "1", "-B", "1", "NEEDLE", pa, pb]);
+    let want = [
+        format!("{pa}:x.log-1-a"),
+        format!("{pa}:x.log:2:NEEDLE"),
+        "--".into(),
+        format!("{pa}:y.log:1:NEEDLE"),
+        "--".into(),
+        format!("{pb}:z.log:1:NEEDLE"),
+    ];
+    assert_eq!(out.lines().collect::<Vec<_>>(), want, "{err}");
+    assert_eq!(c, Some(0));
+
+    // No context, or a mode that prints no lines: no separator.
+    for flags in [&["NEEDLE"][..], &["-c", "-C", "1", "NEEDLE"], &["-l", "-C", "1", "NEEDLE"]] {
+        let mut args = flags.to_vec();
+        args.extend([pa, pb]);
+        let (out, _, _) = run(&args);
+        assert!(!out.lines().any(|l| l == "--"), "{flags:?}: {out}");
+    }
+}
+
 #[test]
 fn archive_sep_changes_the_separator() {
     let f = helpers::tgz("s.tgz", &[("logs/a.log", b"NEEDLE\n")]);

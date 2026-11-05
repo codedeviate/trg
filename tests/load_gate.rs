@@ -238,7 +238,7 @@ fn a_limit_below_the_load_changes_the_pace_not_the_result() {
     #[path = "helpers/mod.rs"]
     mod helpers;
     let d = tempfile::tempdir().unwrap();
-    let mut args: Vec<String> = ["-j", "4", "--load-limit", "-1", "NEEDLE"].map(String::from).to_vec();
+    let mut args: Vec<String> = ["-j", "4", "--load-limit", "0", "NEEDLE"].map(String::from).to_vec();
     for i in 0..6 {
         let body = format!("NEEDLE {i}\n");
         let f = helpers::tgz("x.tgz", &[("logs/a.log", body.as_bytes())]);

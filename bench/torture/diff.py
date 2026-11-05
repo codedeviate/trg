@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Differential test against ripgrep: random small logs (Unicode, CRLF, long
 lines, empty lines, no final newline), random patterns and random flag sets.
-Each log goes into a one-member tgz for trg and stays a plain file for rg,
-and the outputs must match byte for byte, exit code included.
+Each case is one to three logs: members of one tgz for trg, plain files for
+rg, and the outputs must match byte for byte, exit code included, `--`
+between files included.
 
     python3 bench/torture/diff.py [N] [SEED]     # default 1000, 1
 
 trg follows rg 15. With an older rg, cases that combine -c and -o are skipped:
-rg 14 counted lines there, not matches. Exits 1 on any difference. Between members trg prints no `--` where rg prints
-one between files, so each case has a single member.
+rg 14 counted lines there, not matches. Exits 1 on any difference.
 """
 import io
 import os
@@ -53,23 +53,26 @@ if old_rg:
     print("rg older than 15: skipping -c with -o")
 fails = 0
 for it in range(N):
-    body = text()
-    open("a.log", "wb").write(body)
+    names = [f"a{i}.log" for i in range(random.choice([1, 1, 2, 3]))]
+    bodies = [text() for _ in names]
     with tarfile.open("a.tgz", "w:gz") as t:
-        ti = tarfile.TarInfo("a.log")
-        ti.size = len(body)
-        t.addfile(ti, io.BytesIO(body))
+        for name, body in zip(names, bodies):
+            open(name, "wb").write(body)
+            ti = tarfile.TarInfo(name)
+            ti.size = len(body)
+            t.addfile(ti, io.BytesIO(body))
     pat = random.choice(PATS)
     fl = [f for f in random.sample(FLAGS, random.randint(0, 3)) for f in f]
     if "-F" in fl and pat.startswith("(?"):
         continue
     if old_rg and "-c" in fl and "-o" in fl:
         continue
-    rg = subprocess.run(["rg", "-H", "--no-heading", "--color=never", "-n"] + fl + ["-e", pat, "a.log"],
+    # -j1: rg prints files in the order given only on one thread.
+    rg = subprocess.run(["rg", "-j1", "-H", "--no-heading", "--color=never", "-n"] + fl + ["-e", pat] + names,
                         capture_output=True)
     tg = subprocess.run([TRG, "--color=never"] + fl + ["-e", pat, "a.tgz"], capture_output=True)
-    want = rg.stdout.replace(b"a.log", b"X")
-    got = tg.stdout.replace(b"a.tgz:a.log", b"X")
+    want = rg.stdout
+    got = tg.stdout.replace(b"a.tgz:", b"")
     if (want, rg.returncode) == (got, tg.returncode):
         continue
     fails += 1
@@ -83,7 +86,8 @@ for it in range(N):
                 print("   rg :", a and a[:150])
                 print("   trg:", b and b[:150])
                 break
-        open(f"fail{fails}.log", "wb").write(body)
+        for name, body in zip(names, bodies):
+            open(f"fail{fails}-{name}", "wb").write(body)
 print(f"{N} cases: {fails} differ"
       + (f"; failing inputs in {d}" if fails else ""))
 sys.exit(1 if fails else 0)
