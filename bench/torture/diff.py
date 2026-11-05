@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Differential test against ripgrep: random small logs (Unicode, CRLF, long
-lines, empty lines, no final newline), random patterns and random flag sets.
-Each case is one to three logs: members of one tgz for trg, plain files for
-rg, and the outputs must match byte for byte, exit code included, `--`
+"""Differential test against ripgrep: random logs (Unicode, CRLF, long lines,
+empty lines, binary lines, no final newline, now and then a few hundred KB),
+random patterns and random flag sets. Each case is one to three logs: members
+of one archive, in a format picked at random, for trg; files in a directory
+for rg. The outputs must match byte for byte, exit code included, `--`
 between files included.
 
     python3 bench/torture/diff.py [N] [SEED]     # default 1000, 1
 
 trg follows rg 15. With an older rg, cases that combine -c and -o are skipped:
-rg 14 counted lines there, not matches. Exits 1 on any difference.
+rg 14 counted lines there, not matches. Also skipped or allowed, as decided:
+two output modes at once (each tool has its own precedence), rg's closing
+JSON summary, and -c on a member that matched and then hit binary data.
+Exits 1 on any difference; the inputs are kept in fail*/.
 """
 import io
 import json
@@ -18,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 
 from common import TRG, WORK
 
@@ -38,6 +43,32 @@ FLAGS = [[], ["-i"], ["-w"], ["-v"], ["-o"], ["-c"], ["-F"], ["-S"], ["-C", "1"]
          ["--color", "always"], ["-e", "GET"]]
 
 
+FORMATS = ["tgz", "tar", "tar.xz", "tar.bz2", "tar.zst", "tar.lz4", "tar.Z", "zip"]
+
+
+def archive(names, bodies, fmt):
+    """The logs as members of one archive in `fmt`; returns its name."""
+    for old in [f for f in os.listdir(".") if f.startswith("a.")]:
+        os.remove(old)
+    if fmt == "zip":
+        with zipfile.ZipFile("a.zip", "w", zipfile.ZIP_DEFLATED) as z:
+            for name, body in zip(names, bodies):
+                z.writestr(name, body)
+        return "a.zip"
+    mode = {"tgz": "w:gz", "tar.xz": "w:xz", "tar.bz2": "w:bz2"}.get(fmt, "w")
+    out = "a." + fmt if fmt in ("tgz", "tar.xz", "tar.bz2") else "a.tar"
+    with tarfile.open(out, mode) as t:
+        for name, body in zip(names, bodies):
+            ti = tarfile.TarInfo(name)
+            ti.size = len(body)
+            t.addfile(ti, io.BytesIO(body))
+    tool = {"tar.zst": ["zstd", "-q", "--rm"], "tar.lz4": ["lz4", "-q", "--rm"], "tar.Z": ["compress", "-f"]}
+    if fmt in tool:
+        subprocess.run(tool[fmt] + ["a.tar"], check=True)
+        out = "a." + fmt
+    return out
+
+
 def unjson(b):
     """JSON Lines minus what cannot match: timings, and rg's closing summary
     of the whole run, which trg does not write."""
@@ -51,7 +82,9 @@ def unjson(b):
 
 def text():
     lines = []
-    for _ in range(random.randint(0, 60)):
+    # Now and then a log of a few hundred KB, past the searcher's 64 KB
+    # buffer, so a NUL can come after matches.
+    for _ in range(random.randint(0, 60) if random.random() < 0.95 else random.randint(3000, 12000)):
         k = random.random()
         if k < 0.1:
             lines.append("")
@@ -77,12 +110,9 @@ for it in range(N):
     os.mkdir("m")
     names = [f"m/a{i}.log" for i in range(random.choice([1, 1, 2, 3]))]
     bodies = [text() for _ in names]
-    with tarfile.open("a.tgz", "w:gz") as t:
-        for name, body in zip(names, bodies):
-            open(name, "wb").write(body)
-            ti = tarfile.TarInfo(name)
-            ti.size = len(body)
-            t.addfile(ti, io.BytesIO(body))
+    for name, body in zip(names, bodies):
+        open(name, "wb").write(body)
+    arc = archive(names, bodies, random.choice(FORMATS))
     pat = random.choice(PATS)
     fl = [f for f in random.sample(FLAGS, random.randint(0, 3)) for f in f]
     if "-F" in fl and pat.startswith("(?"):
@@ -96,16 +126,21 @@ for it in range(N):
     # -j1: rg prints files in the order given only on one thread.
     rg = subprocess.run(["rg", "-j1", "--no-ignore", "--hidden", "--sort=path", "--no-heading", "--color=never", "-n"] + fl
                         + ["-e", pat, "m"], capture_output=True)
-    tg = subprocess.run([TRG, "--color=never"] + fl + ["-e", pat, "a.tgz"], capture_output=True)
+    tg = subprocess.run([TRG, "--color=never"] + fl + ["-e", pat, arc], capture_output=True)
     want = rg.stdout
-    got = tg.stdout.replace(b"a.tgz:", b"")
+    got = tg.stdout.replace(arc.encode() + b":", b"")
     if "--json" in fl:
         want, got = unjson(want), unjson(got)
     if (want, rg.returncode) == (got, tg.returncode):
         continue
+    # Decided in OUT-OF-SCOPE.md: -c on a member that matched and then hit
+    # binary data. rg prints no count and exits 1; trg prints none either,
+    # but exits 0, as it matched, and says so on stderr.
+    if want == got and (rg.returncode, tg.returncode) == (1, 0) and b"count suppressed" in tg.stderr:
+        continue
     fails += 1
     if fails <= 20:
-        print("--- DIFF", fl, repr(pat), "rg exit", rg.returncode, "trg exit", tg.returncode, tg.stderr[:200])
+        print("--- DIFF", arc, fl, repr(pat), "rg exit", rg.returncode, "trg exit", tg.returncode, tg.stderr[:200])
         w, g = want.splitlines(), got.splitlines()
         for i in range(max(len(w), len(g))):
             a = w[i] if i < len(w) else None
@@ -117,7 +152,7 @@ for it in range(N):
         os.makedirs(f"fail{fails}/m")
         for name, body in zip(names, bodies):
             open(f"fail{fails}/{name}", "wb").write(body)
-        shutil.copy("a.tgz", f"fail{fails}/a.tgz")
+        shutil.copy(arc, f"fail{fails}/{arc}")
         open(f"fail{fails}/cmd", "w").write(repr((fl, pat)) + "\n")
 print(f"{N} cases: {fails} differ"
       + (f"; failing inputs in {d}" if fails else ""))
