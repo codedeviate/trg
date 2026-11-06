@@ -430,3 +430,44 @@ pub fn z_bytes(raw: &[u8]) -> Vec<u8> {
     // last handle.
     std::sync::Arc::try_unwrap(out).unwrap().into_inner().unwrap()
 }
+
+/// `run_trg`, with `input` on standard input.
+pub fn run_trg_stdin(args: &[&str], input: &[u8]) -> (String, String, Option<i32>) {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_trg"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let input = input.to_vec();
+    // From a thread, so a trg that stops reading early cannot block the test.
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let out = child.wait_with_output().unwrap();
+    let _ = feeder.join();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code(),
+    )
+}
+
+/// `bytes` filled up with zeros to a whole number of `block`s, as bsdtar
+/// writes `tar czf - dir > x.tgz`.
+pub fn padded(bytes: &[u8], block: usize) -> Vec<u8> {
+    let mut v = bytes.to_vec();
+    v.resize(bytes.len().div_ceil(block) * block, 0);
+    v
+}
+
+pub fn gzip_bytes(raw: &[u8]) -> Vec<u8> {
+    gzip(raw)
+}
+
+pub fn zstd_plain_bytes(raw: &[u8]) -> Vec<u8> {
+    zstd_bytes(raw)
+}

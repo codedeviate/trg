@@ -196,7 +196,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
         _ => None,
     };
     let stream = match format {
-        Format::Gzip => Guarded::boxed(flate2::read::MultiGzDecoder::new(body), guard),
+        Format::Gzip => Guarded::boxed(gzip_streams(body)?, guard),
         // `zstd`'s reader is streaming like flate2's, so the bounded-memory
         // guarantee and the cache guard carry over unchanged.
         Format::Zstd => Guarded::boxed(zstd_decoder(body)?, guard),
@@ -206,7 +206,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
         // Multi-stream too, and here it is not a corner case: pbzip2 and
         // lbzip2 write one stream per chunk, so a single-stream decoder would
         // stop after the first few hundred kilobytes and report the rest clean.
-        Format::Bzip2 => Guarded::boxed(bzip2::read::MultiBzDecoder::new(body), guard),
+        Format::Bzip2 => Guarded::boxed(bzip2_streams(body)?, guard),
         Format::Lz4 => Guarded::boxed(lz4_decoder(&head, body)?, guard),
         Format::CompressZ => Guarded::boxed(compress_z_decoder(body)?, guard),
         Format::Zip => {
@@ -220,6 +220,89 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),
     };
     Ok(Opened::Stream(stream, unverified_end, format != Format::Tar && format != Format::Plain, shrink))
+}
+
+/// What follows a compressed stream that has ended: the end of the input
+/// (`true`) or another stream (`false`), with any zero bytes before either
+/// read through as block padding.
+///
+/// bsdtar, macOS's tar, writes `tar czf - dir > x.tgz` in 10 KiB blocks and
+/// fills the last one with zeros. gzip, bzip2, zstd and lz4 decoders all read
+/// those as the start of another stream and failed, a 2 for every archive
+/// made that way on a Mac, where tar reads it whole. Only past a stream's
+/// end: a stream's own trailer can end in zeros. No stream format here starts
+/// with a zero byte, and whatever follows the zeros must still be one, so
+/// `cat` of two padded files reads as both.
+fn at_end<R: io::BufRead>(r: &mut R) -> io::Result<bool> {
+    loop {
+        let b = r.fill_buf()?;
+        if b.is_empty() {
+            return Ok(true);
+        }
+        let z = b.iter().take_while(|&&x| x == 0).count();
+        if z < b.len() {
+            r.consume(z);
+            return Ok(false);
+        }
+        r.consume(z);
+    }
+}
+
+/// One compressed stream after another, as `cat a.gz b.gz` is one valid .gz,
+/// ending at the end of the input or at [`at_end`]'s padding.
+struct Streams<R, D> {
+    dec: Option<D>,
+    rest: Option<R>,
+    new: fn(R) -> io::Result<D>,
+    end: fn(D) -> R,
+}
+
+impl<R: io::BufRead, D: Read> Streams<R, D> {
+    fn new(r: R, new: fn(R) -> io::Result<D>, end: fn(D) -> R) -> io::Result<Self> {
+        Ok(Streams { dec: Some(new(r)?), rest: None, new, end })
+    }
+}
+
+impl<R: io::BufRead, D: Read> Read for Streams<R, D> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if let Some(d) = &mut self.dec {
+                let n = d.read(buf)?;
+                if n > 0 {
+                    return Ok(n);
+                }
+                let d = self.dec.take().expect("checked above");
+                self.rest = Some((self.end)(d));
+            }
+            let r = self.rest.as_mut().expect("a stream ended");
+            if at_end(r)? {
+                return Ok(0);
+            }
+            let r = self.rest.take().expect("checked above");
+            self.dec = Some((self.new)(r)?);
+        }
+    }
+}
+
+type Buffered<R> = io::BufReader<R>;
+
+fn gzip_streams<R: Read>(r: R) -> io::Result<impl Read> {
+    Streams::new(
+        Buffered::with_capacity(64 * 1024, r),
+        |r| Ok(flate2::bufread::GzDecoder::new(r)),
+        flate2::bufread::GzDecoder::into_inner,
+    )
+}
+
+fn bzip2_streams<R: Read>(r: R) -> io::Result<impl Read> {
+    Streams::new(
+        Buffered::with_capacity(64 * 1024, r),
+        |r| Ok(bzip2::bufread::BzDecoder::new(r)),
+        bzip2::bufread::BzDecoder::into_inner,
+    )
 }
 
 /// `.Z`, through stuffr's decoder.
@@ -382,10 +465,16 @@ where
 /// unsearchable; trg has no flag to raise it because nobody can know they need
 /// one until an incident. The memory is only ever as large as the archive's
 /// own frame header declares.
-fn zstd_decoder<'a, R: Read>(r: R) -> io::Result<zstd::stream::read::Decoder<'a, io::BufReader<R>>> {
-    let mut d = zstd::stream::read::Decoder::new(r)?;
-    d.window_log_max(31)?;
-    Ok(d)
+///
+/// One frame per decoder, in [`Streams`], so the padding after the last one
+/// is read as padding.
+fn zstd_decoder<R: Read>(r: R) -> io::Result<impl Read> {
+    fn frame<'a, B: io::BufRead>(r: B) -> io::Result<zstd::stream::read::Decoder<'a, B>> {
+        let mut d = zstd::stream::read::Decoder::with_buffer(r)?.single_frame();
+        d.window_log_max(31)?;
+        Ok(d)
+    }
+    Streams::new(Buffered::with_capacity(64 * 1024, r), frame, zstd::stream::read::Decoder::finish)
 }
 
 /// An lz4 decoder positioned past any leading skippable frames, reading every
@@ -422,8 +511,12 @@ impl<R: Read> Read for Lz4Frames<R> {
                 return Ok(n);
             }
             let input = self.0.get_mut();
-            if input.fill_buf()?.is_empty() {
-                if input.get_ref().mid_frame() {
+            if input.fill_buf()?.is_empty() || at_end(input)? {
+                let t = input.get_ref();
+                if t.lost() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "data after the lz4 stream that is not lz4"));
+                }
+                if t.mid_frame() {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "lz4 stream cut off mid-frame"));
                 }
                 return Ok(0);
@@ -474,10 +567,10 @@ where
         Ok(rest)
     };
     match sniff(&inner_head) {
-        Format::Gzip => decoded(&mut flate2::read::MultiGzDecoder::new(&mut inner)),
+        Format::Gzip => decoded(&mut gzip_streams(&mut inner)?),
         Format::Zstd => decoded(&mut zstd_decoder(&mut inner)?),
         Format::Xz => decoded(&mut liblzma::read::XzDecoder::new_multi_decoder(&mut inner)),
-        Format::Bzip2 => decoded(&mut bzip2::read::MultiBzDecoder::new(&mut inner)),
+        Format::Bzip2 => decoded(&mut bzip2_streams(&mut inner)?),
         Format::Lz4 => decoded(&mut lz4_decoder(&inner_head, &mut inner)?),
         // No unverified-end note here, unlike a whole `.Z` file: the archive
         // around the member records its length, and a cut archive is a 2.
@@ -624,6 +717,46 @@ impl<R: Read> Read for EndMark<R> {
             None => self.zeros + n as u64,
         };
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod padding_tests {
+    use super::*;
+
+    fn gz(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        io::Write::write_all(&mut e, data).unwrap();
+        e.finish().unwrap()
+    }
+
+    fn read_all(r: io::Result<impl Read>) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        r?.read_to_end(&mut out)?;
+        Ok(out)
+    }
+
+    /// 10240 bytes in, so the gzip trailer's length ends in two zeros: they
+    /// are the trailer's, not padding.
+    #[test]
+    fn zeros_after_the_last_stream_are_padding_and_a_trailers_own_are_not() {
+        let data = vec![b'x'; 10240];
+        let mut two = gz(&data);
+        two.extend(gz(b"tail"));
+        let mut want = data.clone();
+        want.extend_from_slice(b"tail");
+        assert_eq!(read_all(gzip_streams(&two[..])).unwrap(), want);
+        let mut padded = two.clone();
+        padded.resize(two.len() + 9000, 0);
+        assert_eq!(read_all(gzip_streams(&padded[..])).unwrap(), want);
+        padded.push(1);
+        assert!(read_all(gzip_streams(&padded[..])).is_err(), "data after the padding");
+        padded.pop();
+        padded.extend(gz(b"!"));
+        want.push(b'!');
+        assert_eq!(read_all(gzip_streams(&padded[..])).unwrap(), want, "a stream after the padding");
+        let cut = &two[..two.len() - 1];
+        assert!(read_all(gzip_streams(cut)).is_err(), "a cut trailer");
     }
 }
 

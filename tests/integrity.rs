@@ -176,3 +176,36 @@ fn a_plain_tar_cut_between_members_is_two() {
     let (_, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
     assert_eq!(c, Some(0), "the whole tar: {err}");
 }
+
+/// bsdtar, macOS's tar, writes `tar czf - dir > x.tgz` in 10 KiB blocks
+/// and fills the last with zeros. Every format's decoder read the zeros as a
+/// broken next stream, a 2 on an archive tar reads whole.
+#[test]
+fn zero_padding_after_the_compressed_stream_is_not_an_error() {
+    let tar = helpers::tar_bytes(&[("logs/a.log", b"x\nERR one\n")]);
+    let formats: [(&str, Vec<u8>); 5] = [
+        ("tgz", helpers::gzip_bytes(&tar)),
+        ("tar.bz2", helpers::bz2_bytes(&tar)),
+        ("tar.zst", helpers::zstd_plain_bytes(&tar)),
+        ("tar.lz4", helpers::lz4_bytes(&tar)),
+        ("tar.xz", helpers::xz_bytes(&tar)),
+    ];
+    for (ext, bytes) in formats {
+        let f = helpers::raw(&format!("p.{ext}"), &helpers::padded(&bytes, 10240));
+        let p = f.path.to_str().unwrap();
+        let (out, err, c) = helpers::run_trg(&["ERR", p]);
+        assert!(out.ends_with("logs/a.log:2:ERR one\n"), "{ext}: {out}");
+        assert!(err.is_empty(), "{ext}: {err}");
+        assert_eq!(c, Some(0), "{ext}");
+        let (_, err, c) = helpers::run_trg(&["NOPE", p]);
+        assert!(err.is_empty(), "{ext}: {err}");
+        assert_eq!(c, Some(1), "{ext}");
+
+        // Zeros, then something that is not a stream: still a 2.
+        let mut junk = helpers::padded(&bytes, 10240);
+        junk.extend_from_slice(b"junk");
+        let f = helpers::raw(&format!("j.{ext}"), &junk);
+        let (_, _, c) = helpers::run_trg(&["NOPE", f.path.to_str().unwrap()]);
+        assert_eq!(c, Some(2), "{ext}: junk after the padding");
+    }
+}

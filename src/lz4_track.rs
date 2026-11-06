@@ -49,8 +49,11 @@ enum State {
     Skip(u64),
     /// The content checksum after the end mark, then back to `Magic`.
     ContentSum,
-    /// Not lz4 framing as this reader knows it. lz4_flex reports that itself;
-    /// this reader stops following.
+    /// Zero bytes between frames: block padding, as bsdtar writes.
+    Padding,
+    /// Not lz4 framing as this reader knows it. lz4_flex reports that itself
+    /// only when there are 7 bytes or more of it, enough for a frame header,
+    /// so a shorter tail is the caller's to report: see [`Lz4Track::lost`].
     Lost,
 }
 
@@ -82,9 +85,16 @@ impl<R: Read> Lz4Track<R> {
     pub fn mid_frame(&self) -> bool {
         match self.state {
             State::Magic | State::LegacySize => !self.field.is_empty(),
-            State::Lost => false,
+            State::Lost | State::Padding => false,
             _ => true,
         }
+    }
+
+    /// Whether bytes that are not lz4 framing followed the stream. `junk`
+    /// after a frame decoded cleanly, and a search of it was a 1, where
+    /// `lz4 -d` calls it an invalid frame.
+    pub fn lost(&self) -> bool {
+        matches!(self.state, State::Lost)
     }
 
     fn follow(&mut self, mut b: &[u8]) {
@@ -100,6 +110,17 @@ impl<R: Read> Lz4Track<R> {
             }
             if let State::Lost = self.state {
                 return;
+            }
+            if matches!(self.state, State::Magic | State::Padding) && self.field.is_empty() {
+                let z = b.iter().take_while(|&&x| x == 0).count();
+                b = &b[z..];
+                if z > 0 {
+                    self.state = State::Padding;
+                }
+                if b.is_empty() {
+                    continue;
+                }
+                self.state = State::Magic;
             }
             let want = match self.state {
                 State::Header { need } => need,
@@ -151,7 +172,7 @@ impl<R: Read> Lz4Track<R> {
                 n => self.skip((n & 0x7FFF_FFFF) as u64 + if self.block_sum { 4 } else { 0 }, Then::Block),
             },
             State::ContentSum => State::Magic,
-            State::Skip(_) | State::Lost => State::Lost,
+            State::Skip(_) | State::Padding | State::Lost => State::Lost,
         }
     }
 
@@ -187,6 +208,17 @@ mod tests {
         let mut t = Lz4Track::new(b);
         io::copy(&mut t, &mut io::sink()).unwrap();
         t
+    }
+
+    #[test]
+    fn zeros_between_frames_are_padding_and_other_bytes_are_lost() {
+        let end = [0x04, 0x22, 0x4d, 0x18, 0x40, 0x40, 0xc0, 0, 0, 0, 0];
+        let mut padded = end.to_vec();
+        padded.extend([0; 9]);
+        let t = track(&padded);
+        assert!(!t.mid_frame() && !t.lost());
+        padded.extend(b"junk");
+        assert!(track(&padded).lost());
     }
 
     #[test]

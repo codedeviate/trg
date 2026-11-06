@@ -16,6 +16,13 @@ How versions are chosen before 1.0.0 is described in
 
 ### Fixed
 
+- Zero bytes after the end of a gzip, bzip2, zstd or lz4 stream are read as
+  padding. bsdtar, macOS's tar, writes `tar czf - dir > x.tgz` in 10 KiB
+  blocks and fills the last with zeros, and every such archive was an exit 2
+  ("after the tar's end: invalid gzip header") although tar reads it whole.
+- Up to six bytes of junk after an lz4 stream are an exit 2. lz4_flex reads
+  a tail shorter than a frame header as the end of the input, so it decoded
+  cleanly, where `lz4 -d` reports an invalid frame.
 - A plain log truncated in place while trg reads it (logrotate's
   `copytruncate`) is now an exit 2 saying it shrank. The read met the new
   end of the file early, and a log whose match was in the lost part was a 1.
