@@ -340,7 +340,7 @@ where
             let mut o = crate::archive::Outcome::default();
             o.errors.push(format!(
                 "{}: panicked while searching; skipped",
-                job.path.display()
+                crate::source::display(&job.path)
             ));
             o
         }
@@ -728,7 +728,7 @@ fn unclaimed(job: &Job) -> crate::archive::Outcome {
     let mut o = crate::archive::Outcome::default();
     o.errors.push(format!(
         "{}: every worker exited before this archive was searched; not read",
-        job.path.display()
+        crate::source::display(&job.path)
     ));
     o
 }

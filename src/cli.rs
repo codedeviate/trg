@@ -17,7 +17,8 @@ USAGE:
 
 At least one PATH is required. trg never searches the current directory by
 default: a silent walk of $PWD is not a safe guess for a tool whose exit 1
-is a claim that the logs are clean.
+is a claim that the logs are clean. For the same reason a directory with no
+files in it is exit 2. A PATH of - reads standard input.
 
 MATCHING (same meaning as ripgrep):
     -e, --regexp PAT      add a pattern; repeatable

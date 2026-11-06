@@ -159,7 +159,7 @@ trg [OPTIONS] -T PATH...            # list members, no search
 ```
 
 At least one `PATH` is required: `trg` never searches the current directory on
-its own.
+its own. A `PATH` of `-` reads standard input.
 
 ```sh
 trg 'POST /checkout' /var/log/archive/*.tgz
@@ -167,6 +167,7 @@ trg -g '*.error.log' -C 2 'segfault' /var/log/archive/
 trg --archive-glob '2026-08-*' ' 500 ' /var/log/archive/   # August only, any depth
 trg -T 2026-08-24.tar.zst
 trg --turbo -c ' 500 ' /var/log/archive/
+ssh web1 cat /var/log/archive/web-2026-08-25.tgz | trg ' 500 ' -
 ```
 
 Run `trg --help` for every option, including `-j`, `--nice`,
@@ -181,7 +182,7 @@ across a month of archives.
 |---|---|
 | `0` | matches found, everything was read |
 | `1` | no matches, everything was read |
-| `2` | something went unread — an error, a truncated archive, no `PATH`, an `--archive-glob` that matched nothing, or a `-g` that kept no member |
+| `2` | something went unread — an error, a truncated archive, no `PATH`, a directory with no files in it, an `--archive-glob` that matched nothing, or a `-g` that kept no member |
 
 A `1` is a claim that the logs are clean, so `trg` only gives one when it read
 everything. Never trust a `1` you did not get.

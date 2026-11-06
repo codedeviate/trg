@@ -175,8 +175,9 @@ impl Shrink {
 }
 
 fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
-    let f = File::open(path)?;
-    let size = f.metadata()?.len();
+    let f = if crate::source::is_stdin(path) { File::open("/dev/stdin")? } else { File::open(path)? };
+    let md = f.metadata()?;
+    let size = md.len();
     let dup = f.try_clone()?;
     let rdr = io::BufReader::with_capacity(64 * 1024, f);
     let (head, body) = peek(rdr)?;
@@ -191,8 +192,11 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     let guard = CacheGuard { file: dup, drop_cache };
 
     let unverified_end = format == Format::CompressZ;
+    // Only a regular file has a size to fall short of. A pipe has none, and
+    // asking it for its offset fails, which made `zcat x.gz | trg ERR -` with
+    // no match a 2.
     let shrink = match format {
-        Format::Plain => Some(Shrink { file: guard.file.try_clone()?, size }),
+        Format::Plain if md.is_file() => Some(Shrink { file: guard.file.try_clone()?, size }),
         _ => None,
     };
     let stream = match format {
@@ -368,7 +372,7 @@ where
     // archives that says only "unexpected end of file" has not said which
     // one to look at.
     for e in &mut out.errors {
-        *e = format!("{}: {e}", path.display());
+        *e = format!("{}: {e}", crate::source::display(path));
     }
     out
 }

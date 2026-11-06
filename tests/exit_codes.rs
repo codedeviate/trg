@@ -343,3 +343,41 @@ fn errors_from_inside_an_archive_name_the_archive() {
         assert!(line.starts_with(&format!("trg: {}: ", cut.path.display())), "unattributed: {line}");
     }
 }
+
+/// A directory with no files in it searched nothing: an unmounted mount
+/// point, a log directory spelled wrong. rg says 1, and a 1 says the logs
+/// were read and are clean.
+#[test]
+fn a_directory_with_no_files_is_a_two() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("sub/deeper")).unwrap();
+    let (out, err, c) = helpers::run_trg(&["NEEDLE", d.path().to_str().unwrap()]);
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("no files in this directory"), "{err}");
+    assert_eq!(c, Some(2));
+}
+
+/// Also when another path was searched cleanly: the empty one is still a
+/// place that was named and not read.
+#[test]
+fn an_empty_directory_beside_a_searched_archive_is_still_a_two() {
+    let f = helpers::tgz("a.tgz", &[("logs/a.log", b"NEEDLE\n")]);
+    let d = tempfile::tempdir().unwrap();
+    let (out, err, c) = helpers::run_trg(&["NEEDLE", f.path.to_str().unwrap(), d.path().to_str().unwrap()]);
+    assert!(out.contains("logs/a.log:1:NEEDLE"), "{out}");
+    assert!(err.contains("no files in this directory"), "{err}");
+    assert_eq!(c, Some(2));
+}
+
+/// A FIFO is not a file to search, so a directory holding only one is as
+/// empty as one holding nothing.
+#[cfg(unix)]
+#[test]
+fn a_directory_holding_only_a_fifo_is_a_two() {
+    let d = tempfile::tempdir().unwrap();
+    let fifo = d.path().join("pipe");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let (_, err, c) = helpers::run_trg(&["NEEDLE", d.path().to_str().unwrap()]);
+    assert!(err.contains("no files in this directory"), "{err}");
+    assert_eq!(c, Some(2));
+}

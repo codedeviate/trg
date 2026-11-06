@@ -87,6 +87,16 @@ pub fn resolve_with(
     (r.items, r.errors)
 }
 
+/// `-` names standard input, as in rg and grep: `zcat x.gz | trg ERR -`.
+pub fn is_stdin(p: &Path) -> bool {
+    p.as_os_str() == "-"
+}
+
+/// A path as trg names it: `<stdin>` for `-`, as rg does.
+pub fn display(p: &Path) -> String {
+    if is_stdin(p) { "<stdin>".to_string() } else { p.display().to_string() }
+}
+
 /// The path `-g` judges a plain file by: relative to the current directory,
 /// as rg's are, so `logs`, `./logs` and `$PWD/logs` select the same files.
 /// Spelled as given, `-g 'logs/*.log' ./logs` kept nothing while `logs`
@@ -114,6 +124,9 @@ pub fn glob_candidate(p: &Path) -> PathBuf {
 /// `resolve`, keeping only the walked files that `archive_globs` selects, and
 /// the other names each file was reached by.
 ///
+/// A named directory that holds no files at all is an error (see below for
+/// one whose files the globs all left out).
+///
 /// Files named on the command line are never filtered, as with `rg -g`: naming
 /// a file is a stronger statement than any pattern.
 ///
@@ -131,11 +144,28 @@ pub fn resolve_all(paths: &[PathBuf], archive_globs: Option<&ArchiveGlobs>) -> R
     let mut kept_any = false;
 
     for p in paths {
+        // Read once: a second `-` would find it already drained, and a
+        // pipe's identity says nothing about what it carries.
+        if is_stdin(p) {
+            if !items.iter().any(|i: &PathBuf| is_stdin(i)) {
+                items.push(p.clone());
+            }
+            continue;
+        }
         match std::fs::metadata(p) {
             Err(e) => errors.push(format!("{}: {e}", p.display())),
             Ok(md) if md.is_dir() => {
                 walked_any = true;
+                let before = errors.len();
                 let mut found = walk(p, &mut errors);
+                // A directory with no files in it is a 2, not a clean 1: it is
+                // a mount point with nothing mounted, a log directory spelled
+                // wrong by a day, a rotation that has not run. rg says 1, and
+                // a 1 says the logs were read and are clean. Not when the
+                // walk already failed: that error is the whole story.
+                if found.is_empty() && errors.len() == before {
+                    errors.push(format!("{}: no files in this directory", p.display()));
+                }
                 if let Some(g) = archive_globs {
                     found.retain(|f| g.is_match(p, f));
                 }

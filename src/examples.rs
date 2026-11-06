@@ -424,6 +424,15 @@ pub const SECTIONS: &[Section] = &[
                        with a note on stderr that the file could not vouch for its end.",
             },
             Example {
+                // The test runs the trg part with nothing on standard input,
+                // hence the 1.
+                cmd: "ssh web1 cat /var/log/archive/web-2026-08-25.tgz | trg ' 500 ' -",
+                exit: 1,
+                says: "- reads standard input, archive or plain text, and its hits are \
+                       named <stdin>. A stream cut off on the way is exit 2, as a file \
+                       would be.",
+            },
+            Example {
                 cmd: "trg 'cart.php' legacy/web-2019-02-28.tgz",
                 exit: 0,
                 says: "A rotated log inside an archive is unwrapped one level, whether \

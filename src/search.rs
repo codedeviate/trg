@@ -274,9 +274,9 @@ impl<S: Sink> Sink for MaxCount<S> {
 /// `archive.tgz:logs/vhost03.access.log`, or just the path for a plain file.
 pub fn display_path(archive: &Path, member: &str, sep: char) -> String {
     if member.is_empty() {
-        archive.display().to_string()
+        crate::source::display(archive)
     } else {
-        format!("{}{}{}", archive.display(), sep, member)
+        format!("{}{}{}", crate::source::display(archive), sep, member)
     }
 }
 
@@ -327,7 +327,9 @@ pub fn separates_members(o: &SearchOpts, mode: crate::print::Mode) -> bool {
 /// reached by several names (a symlink, a hardlink) was searched under the
 /// first, and `-g` may pick another: then it is searched, under that one.
 fn plain_name<'p>(member: &str, path: &'p Path, ctx: &'p SearchCtx<'_>) -> Option<&'p Path> {
-    let Some(set) = ctx.globs.filter(|_| member.is_empty()) else {
+    // Standard input has no name for a glob to judge, and asking for it by
+    // `-` is naming it.
+    let Some(set) = ctx.globs.filter(|_| member.is_empty() && !crate::source::is_stdin(path)) else {
         return Some(path);
     };
     let others = ctx.aliases.get(path).map(Vec::as_slice).unwrap_or_default();
@@ -504,7 +506,7 @@ pub fn search_archive(
     if out.unverified_end && !matched && out.errors.is_empty() {
         notes.push(format!(
             "{}: no match, but .Z cannot detect truncation: a cut-off file reads as a shorter one",
-            path.display()
+            crate::source::display(path)
         ));
     }
     out.matched = matched;

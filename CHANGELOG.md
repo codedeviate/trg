@@ -9,8 +9,19 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- A directory with no files in it is now an exit 2, with
+  `dir: no files in this directory` on stderr. It searched nothing, and the
+  1 it gave, as rg does, read as clean logs for an unmounted mount point or
+  a log directory spelled wrong. A directory holding only FIFOs or sockets
+  counts as empty.
+
 ### Added
 
+- A `PATH` of `-` reads standard input, as in rg: `zcat x.gz | trg ERR -`,
+  or a whole archive piped in. Its hits are named `<stdin>`. `-g` does not
+  filter it.
 - `--json` output ends with a `summary` record, as rg's does: the run's
   elapsed time and its statistics summed over every member searched.
 
@@ -26,6 +37,7 @@ How versions are chosen before 1.0.0 is described in
 - A plain log truncated in place while trg reads it (logrotate's
   `copytruncate`) is now an exit 2 saying it shrank. The read met the new
   end of the file early, and a log whose match was in the lost part was a 1.
+  A pipe has no size to fall short of and is not checked.
 - `-g` picks a plain file by any name it was reached by. A log and a symlink
   or hardlink to it are searched once, under the first name the walk met,
   and `-g` used to judge that name alone: `-g current.log` beside
