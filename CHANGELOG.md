@@ -9,9 +9,11 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-06
+
 ### Changed
 
-- A directory with no files in it is now an exit 2, with
+- **Breaking:** a directory with no files in it is now an exit 2, with
   `dir: no files in this directory` on stderr. It searched nothing, and the
   1 it gave, as rg does, read as clean logs for an unmounted mount point or
   a log directory spelled wrong. A directory holding only FIFOs or sockets
@@ -481,7 +483,8 @@ First release: tar-aware search of compressed log archives. Shipped as merge
   `trg -j1` uses 3.81 s CPU against `zgrep -a`'s 31.84 s — 8.4× less — and
   leaves 0 MB of page cache where the other tools leave 639 MB.
 
-[Unreleased]: https://github.com/codedeviate/trg/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/codedeviate/trg/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/codedeviate/trg/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/codedeviate/trg/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/codedeviate/trg/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/codedeviate/trg/compare/v0.12.0...v0.13.0
