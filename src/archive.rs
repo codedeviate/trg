@@ -644,11 +644,19 @@ where
     // Not a tar at all: the whole input is a single anonymous member.
     if sniff(&head) != Format::Tar {
         out.members_seen = 1;
-        let searched = f("", &mut body).and_then(|rest| match (compressed, &shrink) {
-            (true, _) => finish(rest, &mut body),
-            // Read to its end with no match: all of it, unless it shrank.
-            (false, Some(s)) if rest == Rest::Verify => s.check(),
-            (false, _) => Ok(()),
+        let mut seen = SawEnd { inner: &mut body, ended: false };
+        let searched = f("", &mut seen).and_then(|rest| {
+            let ended = seen.ended;
+            match (compressed, &shrink) {
+                (true, _) => finish(rest, &mut body),
+                // Read to its end with no match: all of it, unless it
+                // shrank. Only once the read met the end: a search that
+                // stopped at binary data left the rest unread on purpose,
+                // and every binary file over 64 KiB, /var/log/wtmp among
+                // them, was a 2 that said it had shrunk.
+                (false, Some(s)) if rest == Rest::Verify && ended => s.check(),
+                (false, _) => Ok(()),
+            }
         });
         match searched {
             Ok(()) => out.members_searched = 1,
@@ -730,6 +738,22 @@ where
     }
 
     out
+}
+
+/// Whether a read has returned the end of the input.
+struct SawEnd<'a> {
+    inner: &'a mut dyn Read,
+    ended: bool,
+}
+
+impl Read for SawEnd<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.ended = true;
+        }
+        Ok(n)
+    }
 }
 
 /// Counts the zero bytes the stream ends in. The tar reader takes the end of
@@ -830,5 +854,33 @@ mod shrink_tests {
         std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"more").unwrap();
         io::copy(&mut f, &mut io::sink()).unwrap();
         s.check().unwrap();
+    }
+
+    /// Through the walk: a search that reads to the (new) end of a file cut
+    /// under it is an error, and one that stops early on purpose is not.
+    #[test]
+    fn the_walk_checks_only_a_read_that_met_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("live.log");
+        let walk = |stop_early: bool| {
+            std::fs::write(&p, vec![b'x'; 200_000]).unwrap();
+            let mut cut = false;
+            walk_archive(&p, false, None, |_, r| {
+                let mut buf = [0u8; 4096];
+                r.read_exact(&mut buf)?;
+                if !cut {
+                    std::fs::OpenOptions::new().write(true).open(&p)?.set_len(0)?;
+                    cut = true;
+                }
+                if !stop_early {
+                    io::copy(r, &mut io::sink())?;
+                }
+                Ok(Rest::Verify)
+            })
+        };
+        let read_on = walk(false);
+        assert!(read_on.errors.iter().any(|e| e.contains("shrank")), "{:?}", read_on.errors);
+        let stopped = walk(true);
+        assert!(stopped.errors.is_empty(), "{:?}", stopped.errors);
     }
 }

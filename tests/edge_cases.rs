@@ -380,3 +380,18 @@ fn a_zip_inside_an_archive_gets_a_note() {
     let (_, err, c) = run(&["NEEDLE", g.path.to_str().unwrap()]);
     assert_eq!((err.as_str(), c), ("", Some(0)));
 }
+
+/// A plain binary file is left at its first NUL, so the read stops short of
+/// the end on purpose. The check for a log truncated mid-read took that for
+/// a file that shrank, and every binary file over 64 KiB, /var/log/wtmp and
+/// lastlog among them, was a 2.
+#[test]
+fn a_large_binary_plain_file_is_a_clean_one_not_a_shrunk_file() {
+    let mut bin = vec![0u8; 300_000];
+    bin[..4].copy_from_slice(b"\x7fELF");
+    let f = helpers::raw("wtmp", &bin);
+    let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
+    assert!(out.is_empty(), "{out}");
+    assert!(err.is_empty(), "{err}");
+    assert_eq!(c, Some(1));
+}

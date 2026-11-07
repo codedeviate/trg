@@ -11,6 +11,13 @@ How versions are chosen before 1.0.0 is described in
 
 ### Fixed
 
+- A plain binary file over 64 KiB with no match is a 1 again, not a 2
+  saying it "shrank while being read". Its search stops at the first NUL on
+  purpose, and the check for a log truncated mid-read, new in 0.15.0, took
+  the unread rest for a cut: `trg ERR /var/log/` was a 2 wherever wtmp,
+  lastlog or a journal file sat. The check now runs only once a read met
+  the end of the file.
+
 - Concatenated archives are searched whole: `cat day1.tgz day2.tgz >
   week.tgz` is one valid archive holding two tars, in every format, and the
   search stopped at the first tar's end. A match in the second was an exit
