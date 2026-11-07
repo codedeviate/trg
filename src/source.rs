@@ -232,7 +232,14 @@ pub struct Globs {
 
 impl Globs {
     pub fn is_match(&self, candidate: impl AsRef<Path>) -> bool {
-        let candidate = candidate.as_ref();
+        // `tar -czf day.tgz -C /var/log .` names its members `./apache2/...`,
+        // and `-g 'apache2/*'` matched none of them: beside an archive named
+        // without the `./`, the run read the one and skipped the other. The
+        // leading `.` is how the archive was made, not where the file is.
+        let mut candidate = candidate.as_ref();
+        while let Ok(rest) = candidate.strip_prefix(".") {
+            candidate = rest;
+        }
         let by_name = candidate.file_name().map(|n| self.names.matches(n)).unwrap_or_default();
         let last = self.paths.matches(candidate).into_iter()
             .chain(by_name.into_iter().map(|i| self.name_at[i]))

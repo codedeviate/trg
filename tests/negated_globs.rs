@@ -145,3 +145,34 @@ fn full_path_matching_still_applies() {
     let (out, _, _) = run(&["-g", "l*a.log", "NEEDLE", f.path.to_str().unwrap()]);
     assert!(out.contains("NEEDLE logs a"), "a no-slash glob that crossed a / before must still: {out}");
 }
+
+/// `tar -czf day.tgz -C /var/log .` names members `./apache2/access.log`.
+/// A `-g` with a `/` in it matched none of them, so beside an archive named
+/// without the `./` one was searched and the other skipped.
+#[test]
+fn a_leading_dot_slash_in_member_names_does_not_hide_them_from_globs() {
+    // By hand: the tar crate drops a `./` when it sets a path.
+    let body = b"GET 500\n";
+    let mut h = tar::Header::new_gnu();
+    let name = b"./apache2/access.log";
+    h.as_old_mut().name[..name.len()].copy_from_slice(name);
+    h.set_size(body.len() as u64);
+    h.set_mode(0o644);
+    h.set_entry_type(tar::EntryType::Regular);
+    h.set_cksum();
+    let mut b = tar::Builder::new(Vec::new());
+    b.append(&h, &body[..]).unwrap();
+    let raw = b.into_inner().unwrap();
+    let f = helpers::raw("dot.tgz", &helpers::gzip_bytes(&raw));
+    let p = f.path.to_str().unwrap();
+    let (out, _, c) = helpers::run_trg(&["-T", p]);
+    assert_eq!(out.trim(), format!("{p}:./apache2/access.log"), "the fixture keeps its ./");
+    assert_eq!(c, Some(0));
+    for g in ["apache2/*.log", "apache2/access.log", "**/access.log"] {
+        let (out, err, c) = helpers::run_trg(&["-g", g, "500", p]);
+        assert_eq!(out, format!("{p}:./apache2/access.log:1:GET 500\n"), "-g {g}: {err}");
+        assert_eq!(c, Some(0), "-g {g}");
+    }
+    let (_, _, c) = helpers::run_trg(&["-g", "!apache2/*", "500", p]);
+    assert_eq!(c, Some(2), "excluded by a negated glob, so nothing kept");
+}

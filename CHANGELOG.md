@@ -21,6 +21,10 @@ How versions are chosen before 1.0.0 is described in
   word that the days inside were never read.
 - A zip on a pipe (`cat x.zip | trg ERR -`) says it cannot be read from a
   pipe, where it said only "Illegal seek". Still an exit 2.
+- `-g` ignores a leading `./` in member names. `tar -czf day.tgz -C
+  /var/log .` names its members `./apache2/access.log`, and `-g
+  'apache2/*'` matched none of them, so beside an archive named without it
+  one was searched and the other silently skipped.
 - Bytes after a tar's end that are neither zeros nor another tar are an
   exit 2. They were read and thrown away. A byte changed in a `.tar.Z`,
   which has no checksum, gave a silent 1 in 68 of 100 torture runs; now
