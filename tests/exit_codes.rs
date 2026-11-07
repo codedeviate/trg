@@ -381,3 +381,14 @@ fn a_directory_holding_only_a_fifo_is_a_two() {
     assert!(err.contains("no files in this directory"), "{err}");
     assert_eq!(c, Some(2));
 }
+
+/// With `--archive-glob`, an empty directory says only that it is empty:
+/// the glob had nothing to match, not nothing it matched.
+#[test]
+fn an_empty_directory_does_not_also_blame_the_archive_glob() {
+    let d = tempfile::tempdir().unwrap();
+    let (_, err, c) = helpers::run_trg(&["--archive-glob", "*.tgz", "NEEDLE", d.path().to_str().unwrap()]);
+    assert!(err.contains("no files in this directory"), "{err}");
+    assert!(!err.contains("--archive-glob"), "{err}");
+    assert_eq!(c, Some(2));
+}

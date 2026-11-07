@@ -163,7 +163,10 @@ struct Shrink {
 impl Shrink {
     fn check(&self) -> io::Result<()> {
         let at = io::Seek::stream_position(&mut &self.file)?;
-        if at < self.size {
+        // And smaller now than then: a file whose stated size is not its
+        // content, as sysfs's 4096 for a few bytes, ends early and has not
+        // shrunk.
+        if at < self.size && self.file.metadata()?.len() < self.size {
             return Err(io::Error::other(format!(
                 "shrank while being read: {} bytes when opened, only {at} read \
                  (truncated in place, as by logrotate's copytruncate?)",

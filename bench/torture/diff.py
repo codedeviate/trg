@@ -10,7 +10,9 @@ between files included.
 
 trg follows rg 15. With an older rg, cases that combine -c and -o are skipped:
 rg 14 counted lines there, not matches, and reported 0 bytes_searched in
-JSON under -m, so that field is not compared. Also skipped or allowed:
+JSON under -m, and its JSON summary counts only the files that matched as
+searches (its own --stats counts them all), so neither field is compared.
+Also skipped or allowed:
 two output modes at once (each tool has its own precedence), and -c on a
 member that matched and then hit binary data.
 Exits 1 on any difference; the inputs are kept in fail*/.
@@ -105,8 +107,8 @@ old_rg = int(subprocess.run(["rg", "--version"], capture_output=True, text=True)
 # Timings, and bytes_printed, which counts trg's longer archive:member paths.
 DROP = {"elapsed", "elapsed_total", "bytes_printed"}
 if old_rg:
-    print("rg older than 15: skipping -c with -o, and JSON bytes_searched under -m")
-    DROP.add("bytes_searched")
+    print("rg older than 15: skipping -c with -o; not comparing JSON bytes_searched and searches")
+    DROP.update({"bytes_searched", "searches"})
 fails = 0
 for it in range(N):
     # In a directory rg walks, as members are files trg finds rather than

@@ -155,7 +155,6 @@ pub fn resolve_all(paths: &[PathBuf], archive_globs: Option<&ArchiveGlobs>) -> R
         match std::fs::metadata(p) {
             Err(e) => errors.push(format!("{}: {e}", p.display())),
             Ok(md) if md.is_dir() => {
-                walked_any = true;
                 let before = errors.len();
                 let mut found = walk(p, &mut errors);
                 // A directory with no files in it is a 2, not a clean 1: it is
@@ -166,6 +165,9 @@ pub fn resolve_all(paths: &[PathBuf], archive_globs: Option<&ArchiveGlobs>) -> R
                 if found.is_empty() && errors.len() == before {
                     errors.push(format!("{}: no files in this directory", p.display()));
                 }
+                // Only a directory with files in it can say anything about
+                // the globs: an empty one has its own error above.
+                walked_any |= !found.is_empty();
                 if let Some(g) = archive_globs {
                     found.retain(|f| g.is_match(p, f));
                 }

@@ -16,7 +16,10 @@ How versions are chosen before 1.0.0 is described in
   purpose, and the check for a log truncated mid-read, new in 0.15.0, took
   the unread rest for a cut: `trg ERR /var/log/` was a 2 wherever wtmp,
   lastlog or a journal file sat. The check now runs only once a read met
-  the end of the file.
+  the end of the file, and only for a file now smaller than when it was
+  opened: Linux's sysfs states 4096 bytes for a file of a few.
+- An empty directory with `--archive-glob` says only that it is empty, not
+  also that the glob matched nothing.
 
 - Concatenated archives are searched whole: `cat day1.tgz day2.tgz >
   week.tgz` is one valid archive holding two tars, in every format, and the
