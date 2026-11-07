@@ -3,8 +3,9 @@
 empty lines, binary lines, no final newline, now and then a few hundred KB),
 random patterns and random flag sets. Each case is one to three logs: members
 of one archive, in a format picked at random, for trg; files in a directory
-for rg. The outputs must match byte for byte, exit code included, `--`
-between files included.
+for rg, which runs with --binary to read past a NUL as trg does. The
+outputs must match byte for byte, exit code included, `--` between files
+included.
 
     python3 bench/torture/diff.py [N] [SEED]     # default 1000, 1
 
@@ -12,9 +13,8 @@ trg follows rg 15. With an older rg, cases that combine -c and -o are skipped:
 rg 14 counted lines there, not matches, and reported 0 bytes_searched in
 JSON under -m, and its JSON summary counts only the files that matched as
 searches (its own --stats counts them all), so neither field is compared.
-Also skipped or allowed:
-two output modes at once (each tool has its own precedence), and -c on a
-member that matched and then hit binary data.
+Also skipped: two output modes at once (each tool has its own precedence),
+and -B or -C with a NUL in a log, where rg misses a match (see below).
 Exits 1 on any difference; the inputs are kept in fail*/.
 """
 import io
@@ -111,9 +111,9 @@ if old_rg:
     DROP.update({"bytes_searched", "searches"})
 fails = 0
 for it in range(N):
-    # In a directory rg walks, as members are files trg finds rather than
-    # files it was handed: rg skips a binary file it finds, where it would
-    # search one named on the command line.
+    # In a directory rg walks, with --binary: trg reads past a NUL as rg
+    # reads a file named on the command line, and --binary makes rg read
+    # every file it finds that way.
     shutil.rmtree("m", ignore_errors=True)
     os.mkdir("m")
     names = [f"m/a{i}.log" for i in range(random.choice([1, 1, 2, 3]))]
@@ -131,8 +131,13 @@ for it in range(N):
     # --json), rg has its own order, and still writes its JSON summary.
     if len({"-q", "-l", "-c", "--json"} & set(fl)) > 1:
         continue
+    # rg 15.2 misses a match after binary data when it has before-context:
+    # its printer refuses the context line, which ends the search. trg does
+    # not (tests/edge_cases.rs covers it), so the two cannot agree there.
+    if any(f in fl for f in ("-B", "-C")) and any(b"\0" in b for b in bodies):
+        continue
     # -j1: rg prints files in the order given only on one thread.
-    rg = subprocess.run(["rg", "-j1", "--no-ignore", "--hidden", "--sort=path", "--no-heading", "--color=never", "-n"] + fl
+    rg = subprocess.run(["rg", "-j1", "--binary", "--no-ignore", "--hidden", "--sort=path", "--no-heading", "--color=never", "-n"] + fl
                         + ["-e", pat, "m"], capture_output=True)
     tg = subprocess.run([TRG, "--color=never"] + fl + ["-e", pat, arc], capture_output=True)
     want = rg.stdout
@@ -140,11 +145,6 @@ for it in range(N):
     if "--json" in fl:
         want, got = unjson(want), unjson(got)
     if (want, rg.returncode) == (got, tg.returncode):
-        continue
-    # Decided in OUT-OF-SCOPE.md: -c on a member that matched and then hit
-    # binary data. rg prints no count and exits 1; trg prints none either,
-    # but exits 0, as it matched, and says so on stderr.
-    if want == got and (rg.returncode, tg.returncode) == (1, 0) and b"count suppressed" in tg.stderr:
         continue
     fails += 1
     if fails <= 20:

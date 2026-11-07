@@ -84,7 +84,8 @@ pub fn set_io_idle() {}
 /// it prevents caching rather than evicting afterwards. `drop_cache` is
 /// therefore honoured on macOS at this point and on Linux only in [`finish`].
 ///
-/// Callers must pass `drop_cache: false` for plain files — see [`finish`].
+/// Callers must pass `drop_cache: false` for plain files — see [`finish`] —
+/// except one found to be binary, which no live log is.
 #[cfg(target_os = "linux")]
 pub fn prepare(f: &File, _drop_cache: bool) {
     use std::os::unix::io::AsRawFd;
@@ -108,10 +109,11 @@ pub fn prepare(_f: &File, _drop_cache: bool) {}
 
 /// Called after an archive has been fully read.
 ///
-/// Only ever called with `drop_cache: true` for archives, never for plain
-/// files: Apache holds live logs open for append, and evicting those pages
-/// would harm the very process this feature exists to protect. Compressed and
-/// tar inputs are cold and ours to drop.
+/// Only ever called with `drop_cache: true` for archives and binary plain
+/// files, never for a plain text file: Apache holds live logs open for
+/// append, and evicting those pages would harm the very process this feature
+/// exists to protect. Compressed and tar inputs are cold and ours to drop,
+/// and so is a binary file: see `BinaryCache` in `archive.rs`.
 ///
 /// `FADV_DONTNEED` drops clean pages only. An archive written moments ago,
 /// logrotate's newest, can still be dirty, and stays cached until the kernel

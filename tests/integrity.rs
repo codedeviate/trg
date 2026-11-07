@@ -125,26 +125,25 @@ fn a_binary_looking_member_is_still_read_to_its_checksum() {
     assert_eq!(c, Some(2), "a member: {err}");
 }
 
-/// Reading on to a checksum is for data that has one. A plain stream that
-/// looks binary still stops at its first NUL: /dev/zero never ends.
+/// An endless stream is read until it is stopped, as rg and grep read
+/// /dev/zero: a 1 would claim it was read to its end. Every NUL ends a line,
+/// so memory stays flat however long it runs.
 #[cfg(unix)]
 #[test]
-fn an_endless_plain_stream_still_stops_at_binary() {
+fn an_endless_binary_stream_is_read_in_flat_memory_until_stopped() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_trg"))
         .args(["NEEDLE", "/dev/zero"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    for _ in 0..100 {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert_eq!(status.code(), Some(1));
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(child.try_wait().unwrap().is_none(), "trg stopped reading /dev/zero");
+    let ps = Command::new("ps").args(["-o", "rss=", "-p", &child.id().to_string()]).output().unwrap();
     child.kill().unwrap();
-    panic!("trg read /dev/zero for 10 s");
+    let _ = child.wait();
+    let kib: u64 = String::from_utf8_lossy(&ps.stdout).trim().parse().unwrap();
+    assert!(kib < 64 * 1024, "{kib} KiB after 2 s of /dev/zero");
 }
 
 /// A stored zip entry has no decoder, but it has a CRC-32 at its end.

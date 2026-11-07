@@ -87,10 +87,17 @@ pub fn build_searcher(o: &SearchOpts) -> Searcher {
         // after-context, which `sink_limit` hands to the sink.
         .max_matches(if sink_limit(o).is_some() { None } else { o.max_count })
         .heap_limit(Some(o.heap_limit))
+        // Read on past binary data, as rg reads a file it is handed
+        // (`rg --binary` for one it finds): a NUL ends a line, the search
+        // goes on, and a match after it prints `binary file matches`.
+        // Stopping at the first NUL, as rg does for a file it finds, made a
+        // 1 that had not read everything: a log rotated by copytruncate,
+        // reopened by a writer at its old offset, starts with a hole of NULs
+        // and its lines after it were never searched.
         .binary_detection(if o.text {
             BinaryDetection::none()
         } else {
-            BinaryDetection::quit(b'\x00')
+            BinaryDetection::convert(b'\x00')
         });
     if o.crlf {
         b.line_terminator(grep_matcher::LineTerminator::crlf());
@@ -120,7 +127,6 @@ pub fn sink_limit(o: &SearchOpts) -> Option<u64> {
 pub struct MaxCount<S> {
     inner: S,
     seen: u64,
-    binary_at: Option<u64>,
     /// [`sink_limit`], and the after-context it allows past it.
     limit: Option<(u64, usize)>,
     /// Lines still to print once the limit is reached, as rg prints them:
@@ -134,11 +140,29 @@ pub struct MaxCount<S> {
     separate: bool,
     /// Whether any line went to the printer for this member.
     printed: bool,
+    /// The printer is the default one, which prints no line after binary
+    /// data, only `binary file matches` once the search is over.
+    standard: bool,
+    /// Binary data has been seen in this member.
+    binary: bool,
 }
 
 impl<S: Sink> MaxCount<S> {
-    pub fn new(inner: S, limit: Option<(u64, usize)>, separate: bool) -> Self {
-        Self { inner, seen: 0, binary_at: None, limit, left: None, separate, printed: false }
+    pub fn new(inner: S, limit: Option<(u64, usize)>, separate: bool, standard: bool) -> Self {
+        Self { inner, seen: 0, limit, left: None, separate, printed: false, standard, binary: false }
+    }
+
+    /// The default printer, past binary data: it takes no more lines.
+    ///
+    /// It refuses a context line there by returning `false`, which stops the
+    /// search, so with `-B` the line before a match ended the search before
+    /// the match was reported: a 1 for a member that matched. rg 15.2 does
+    /// the same (`rg --binary -B1`), and plain `rg --binary` finds the match.
+    /// Such lines are dropped here instead, and the search goes on to the
+    /// match, which the printer reports as `binary file matches`. After a
+    /// match it stops as before: the outcome is settled.
+    fn mute(&self) -> bool {
+        self.standard && self.binary
     }
 
     /// Whether any line was printed for this member.
@@ -148,6 +172,9 @@ impl<S: Sink> MaxCount<S> {
 
     /// Called before every line goes to the printer.
     fn before_line(&mut self, s: &Searcher) -> Result<(), S::Error> {
+        if self.mute() {
+            return Ok(());
+        }
         if !self.printed {
             self.printed = true;
             if self.separate {
@@ -179,18 +206,6 @@ impl<S: Sink> MaxCount<S> {
     pub fn saw_match(&self) -> bool {
         self.seen > 0
     }
-
-    /// Matched, then ran into binary data — the one combination that makes
-    /// `SummarySink` retract its count and print nothing.
-    ///
-    /// Read from the searcher's own `SinkFinish`, which is the same value
-    /// `SummarySink::finish` consults before squashing `match_count` to zero,
-    /// so the two can never disagree about whether a count was suppressed.
-    /// Only `-c` cares: `-l` prints the path, `--json` emits its records and
-    /// the default printer emits a binary warning of its own.
-    pub fn count_suppressed_by_binary(&self) -> bool {
-        self.seen > 0 && self.binary_at.is_some()
-    }
 }
 
 impl<S: Sink> Sink for MaxCount<S> {
@@ -201,14 +216,9 @@ impl<S: Sink> Sink for MaxCount<S> {
         // load-bearing twice over.
         //
         // A printer is allowed to say "stop, I have seen enough" — `-l` and
-        // `-q` both quit on their first match — and a printer is allowed to
-        // revise what it reports afterwards: `SummarySink::finish` zeroes its
-        // own `match_count` whenever binary data was seen under
-        // `BinaryDetection::quit`, which grep-printer's source calls "an
-        // unfortunate inconsistency ... we accept the bug". That is a
-        // reasonable answer to rg's question ("is this file worth showing
-        // you?") and the wrong answer to ours, because exit 1 here is a
-        // positive claim that the logs are clean.
+        // `-q` both quit on their first match, and the default printer at
+        // the first match after binary data — and a printer is allowed to
+        // revise what it reports afterwards.
         //
         // Counting first makes `seen` the record of what the *searcher*
         // reported, which no printer can overrule and no early stop can
@@ -237,7 +247,10 @@ impl<S: Sink> Sink for MaxCount<S> {
             return Ok(false);
         }
         self.before_line(s)?;
-        let more = self.inner.context(s, c)?;
+        // Past binary data, a line before the member's first match is
+        // stepped over so the search reaches the match. Once it has
+        // matched, the outcome is settled and the search stops, as rg's does.
+        let more = if self.mute() { self.seen == 0 } else { self.inner.context(s, c)? };
         Ok(self.past_limit(more))
     }
 
@@ -245,10 +258,13 @@ impl<S: Sink> Sink for MaxCount<S> {
         if self.done() {
             return Ok(false);
         }
+        // Not muted: a gap after this member's lines gets its `--` before
+        // `binary file matches`, as in rg.
         self.inner.context_break(s)
     }
 
     fn binary_data(&mut self, s: &Searcher, off: u64) -> Result<bool, S::Error> {
+        self.binary = true;
         self.inner.binary_data(s, off)
     }
 
@@ -259,14 +275,18 @@ impl<S: Sink> Sink for MaxCount<S> {
     // `begin`. Without these two, `-c` and `-l` print nothing at all.
     fn begin(&mut self, s: &Searcher) -> Result<bool, S::Error> {
         self.seen = 0;
-        self.binary_at = None;
+        self.binary = false;
         self.left = None;
         self.printed = false;
         self.inner.begin(s)
     }
 
     fn finish(&mut self, s: &Searcher, f: &SinkFinish) -> Result<(), S::Error> {
-        self.binary_at = f.binary_byte_offset();
+        // The printer writes `binary file matches` for a member that
+        // matched; the next member's `--` goes after it, as in rg.
+        if self.mute() && self.seen > 0 {
+            self.printed = true;
+        }
         self.inner.finish(s, f)
     }
 }
@@ -294,10 +314,6 @@ pub struct SearchCtx<'a> {
     /// A request, not a decision: `walk_archive` narrows it to
     /// archives, so a plain live logfile is never evicted.
     pub drop_cache: bool,
-    /// Whether the run is in `-c` mode. Not used to choose a printer — `cli`
-    /// already did that — only to decide whether a suppressed count is worth a
-    /// note on stderr.
-    pub count_mode: bool,
     /// Other names of the files searched, for `-g` on plain files.
     pub aliases: &'a crate::source::Aliases,
     /// `-m` and `-A`, when the sink enforces `-m`: see [`sink_limit`].
@@ -392,8 +408,6 @@ impl io::Read for FullReads<'_> {
 /// What one member's search concluded, beyond the bytes it printed.
 pub struct MemberVerdict {
     pub matched: bool,
-    /// The member matched but `-c` printed no count line for it.
-    pub count_suppressed: bool,
     /// Any line was printed for it.
     pub printed: bool,
     /// With `--json`, the printer's statistics for the member.
@@ -426,9 +440,9 @@ fn search_member(
     // search, ask it what it saw — written once. `$stats` reads the sink's
     // statistics, which only the JSON printer keeps.
     macro_rules! run {
-        ($p:expr, |$sink:ident| $stats:expr) => {{
+        ($p:expr, $standard:expr, |$sink:ident| $stats:expr) => {{
             let sink = $p.sink_with_path(m, display);
-            let mut capped = MaxCount::new(sink, limit, separate);
+            let mut capped = MaxCount::new(sink, limit, separate, $standard);
             let mut reads = FullReads::new(&mut *r);
             let res = s.search_reader(m, &mut reads, &mut capped);
             let container = match crate::sniff::sniff(&reads.head) {
@@ -440,18 +454,17 @@ fn search_member(
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.
             let hit = capped.saw_match();
-            let suppressed = capped.count_suppressed_by_binary();
             let printed = capped.printed();
             res.map_err(io::Error::other)?;
             let $sink = &capped.inner;
-            MemberVerdict { matched: hit, count_suppressed: suppressed, printed, stats: $stats, container }
+            MemberVerdict { matched: hit, printed, stats: $stats, container }
         }};
     }
 
     Ok(match printer {
-        crate::print::Printer::Standard(p) => run!(p, |_sink| None),
-        crate::print::Printer::Summary(p) => run!(p, |_sink| None),
-        crate::print::Printer::Json(p) => run!(p, |sink| Some(sink.stats().clone())),
+        crate::print::Printer::Standard(p) => run!(p, true, |_sink| None),
+        crate::print::Printer::Summary(p) => run!(p, false, |_sink| None),
+        crate::print::Printer::Json(p) => run!(p, false, |sink| Some(sink.stats().clone())),
     })
 }
 
@@ -485,24 +498,17 @@ pub fn search_archive(
         if let Some(st) = &v.stats {
             *stats.get_or_insert_with(grep_printer::Stats::new) += st;
         }
-        // `-c` is otherwise the only mode that goes completely silent on a
-        // member that matched and then hit binary data: stdout stays empty and
-        // the exit code stays 0, so `n=$(trg -c PAT a.tgz)` yields '' and a
-        // script testing `((n>0))` concludes the logs are clean. stdout must
-        // not change — it is rg-compatible, and the count really is unknown —
-        // so the correction goes to stderr, where it costs a pipeline nothing
-        // and an operator everything.
-        // Archives inside archives are not opened (OUT-OF-SCOPE.md), and a
-        // zip or a tar reads as binary, so it was skipped without a word: a 1
-        // that says nothing about the logs inside it. A tar is the likelier:
-        // `tar -cf month.tar day*.tgz` holds tgzs, unwrapped here to tars.
+        // Archives inside archives are not opened (OUT-OF-SCOPE.md). Their
+        // bytes are searched as one binary file, which finds a line in a
+        // plain tar but nothing in a compressed zip entry, and shows a hit
+        // only as `binary file matches`. A tar is the likelier: `tar -cf
+        // month.tar day*.tgz` holds tgzs, unwrapped here to tars.
         match v.container {
-            Some("zip") => notes.push(format!("{display}: a zip inside the archive; its entries are not searched")),
-            Some(kind) => notes.push(format!("{display}: a {kind} inside the archive; its members are not searched")),
+            Some("zip") => notes.push(format!("{display}: a zip inside the archive; its entries are not opened")),
+            Some(kind) => notes.push(format!(
+                "{display}: a {kind} inside the archive; searched as one binary file, not member by member"
+            )),
             None => {}
-        }
-        if ctx.count_mode && v.count_suppressed {
-            notes.push(format!("{display}: binary data; count suppressed"));
         }
         // A member that matched is a 0 either way, so `-q`, `-l` and `-m`
         // keep stopping early; one that did not must be read to its end.

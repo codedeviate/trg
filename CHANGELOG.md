@@ -9,6 +9,31 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** binary data is searched, not skipped at its first NUL byte,
+  as rg searches a file named on its command line (`rg --binary` for one
+  it finds). A NUL
+  ends a line; a match prints `binary file matches` where its line would
+  be, and `-a` prints the lines. A 1 now means every byte was read: a log
+  reopened at its old offset after logrotate's `copytruncate` starts with a
+  run of NULs, and its lines after them were never searched, a 1 even for
+  `trg ERR app.log` where `rg ERR app.log` found the match. Binary data
+  holding the pattern, a core dump say, is now a 0.
+- `-c` counts a member that matched and then hit binary data, as `rg
+  --binary -c` does, and the stderr note about a suppressed count is gone.
+- A plain file found to be binary leaves the page cache, as an archive
+  does, so a sweep of /var/log does not pull journals and core dumps into
+  it. A text file stays cached: it may be a live log.
+- `/dev/zero` and other endless streams are read until stopped, as by rg
+  and grep, in flat memory.
+
+### Fixed
+
+- A match after binary data is found with `-B` or `-C`. The line before it
+  came first, the printer refused it, and the search ended: a 1. rg 15.2
+  has the same bug (`rg --binary -B1`).
+
 ## [0.15.2] - 2026-11-07
 
 ### Fixed

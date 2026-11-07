@@ -32,22 +32,15 @@ When an item moves into the codebase, delete it here and record it in
   `Zstandard Frames: 1`. Plain `zstd`, `zstd -T0` and `tar --zstd` all write a
   single frame; only multi-frame tools such as `pzstd` would make this
   possible. Reconsider if the archiving changes to one of those.
-- **A stdout signal for a `-c` member that matched and then hit binary data.**
-  The count is genuinely unknown. `rg -c` over a directory prints nothing for
-  such a file too (and exits 1; trg exits 0), and archive members are searched
-  the way rg searches files it discovers, not files it is handed. Any marker on
-  stdout breaks `-c`'s rg-compatible `member:count` format for
-  every script that parses it. The stderr note (`binary data; count
-  suppressed`) and the exit code already carry it, and both cost a pipeline
-  nothing. Decided 2026-10-24.
 
 ### Not built, for now
 
 - **Archives inside archives.** A zip or tar member that is itself a zip or
-  tar is searched as bytes. The one level of nesting is for compression, and
-  an archive in an archive is a container, not a compression. A zip or tar
-  member, compressed or not, gets a note on stderr, as its bytes read as
-  binary and would otherwise be skipped without a word.
+  tar is searched as one binary file, not opened. The one level of nesting
+  is for compression, and an archive in an archive is a container, not a
+  compression. Such a member, compressed or not, gets a note on stderr: a
+  match in it shows only as `binary file matches`, and a zip's compressed
+  entries cannot match at all.
 - **Other stuffr formats** (cpio, ar, lha, arj, arc, zoo; brotli, snappy,
   lzip, lzma). Reachable the same way zip and `.Z` were, a cargo feature
   each, but none of them holds logs on any server trg runs on.

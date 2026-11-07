@@ -185,7 +185,9 @@ across a month of archives.
 | `2` | something went unread — an error, a truncated archive, no `PATH`, a directory with no files in it, an `--archive-glob` that matched nothing, or a `-g` that kept no member |
 
 A `1` is a claim that the logs are clean, so `trg` only gives one when it read
-everything. Never trust a `1` you did not get.
+everything. Never trust a `1` you did not get. Binary data is read too, as rg
+reads a file named on its command line: a match in it prints `binary file matches`, and
+`-a` prints the lines.
 
 One format cannot back that claim fully: `.Z` records neither its length
 nor a checksum, so a truncated `.Z` decodes cleanly to a shorter file. Cut at

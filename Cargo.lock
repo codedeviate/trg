@@ -838,6 +838,7 @@ dependencies = [
  "libc",
  "liblzma",
  "lz4_flex",
+ "memchr",
  "num_cpus",
  "serde_json",
  "stuffr-core",

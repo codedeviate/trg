@@ -27,7 +27,8 @@ MATCHING (same meaning as ripgrep):
     -w, --word-regexp     match whole words only
     -F, --fixed-strings   treat patterns as literals
     -v, --invert-match    show non-matching lines
-    -a, --text            search members that look binary
+    -a, --text            print the lines of binary data, not only
+                          `binary file matches`
     -m, --max-count NUM   stop after NUM matches per member
         --crlf            treat CRLF as the line terminator
 
@@ -92,11 +93,15 @@ EXIT CODES:
     2  something went unread — never trust a 1 you did not get
 
 NOTES (documented, and surprising the first time):
-    -T lists every member, including ones a search skips as binary.
+    Binary data is searched too, as rg searches a file named on its command
+      line: a NUL byte ends a line, and a match prints `binary file matches`
+      where its line would be (-a prints the lines). A 1 means every byte
+      was read.
+      An endless stream such as /dev/zero is read until stopped, as by rg.
+      A plain file found to be binary leaves the page cache, as archives do.
     Two directories symlinking the same file search it once (identity dedup).
     Every checksum is read, including the gzip, bzip2 or lz4 trailer after a
-      tar's end and the rest of a member that looked binary, so a corrupt
-      archive is a 2. A file a few bytes long, shorter than its format's
+      tar's end, so a corrupt archive is a 2. A file a few bytes long, shorter than its format's
       signature, reads as plain bytes; a plain .tar has no checksum on data.
     With -j above 1, results wait so they come out in order. Once more than
       64 MB is waiting, trg writes it out of order, with a note on stderr.
@@ -107,10 +112,11 @@ NOTES (documented, and surprising the first time):
     Compression is detected from content, never from the filename, so there is
       no -z flag. gzip, zstd, xz, bzip2 and lz4 are recognised, each unwrapped
       one level, so a logrotate'd access.log.1.gz, .zst, .xz, .bz2 or .lz4
-      inside the archive is searched as text rather than skipped as binary.
+      inside the archive is searched as text, not as compressed bytes.
       .Z (compress) is read too, as a whole file and as a member.
     A zip's members are searched like a tar's, compressed ones included. A
-      zip or tar inside another archive is searched as bytes, not opened.
+      zip or tar inside another archive is searched as one binary file, not
+      opened, with a note on stderr.
       A zip whose local headers disagree with its central directory is
       searched as the directory has it, and is a 2.
     .Z has no length and no checksum, so a truncated .Z reads as a shorter

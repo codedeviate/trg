@@ -186,6 +186,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     let (head, body) = peek(rdr)?;
 
     let format = sniff(&head);
+    let asked = drop_cache;
     let drop_cache = drop_cache && format != Format::Plain;
     // Not for a zip: it is read by seeking, a header and an entry at a time,
     // and under macOS's F_NOCACHE every one of those small reads went to the
@@ -229,9 +230,50 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
             }
             return Ok(Opened::Zip(file, guard));
         }
-        Format::Tar | Format::Plain => Guarded::boxed(body, guard),
+        Format::Tar => Guarded::boxed(body, guard),
+        Format::Plain if asked => {
+            let file = guard.file.try_clone()?;
+            Guarded::boxed(BinaryCache { inner: body, file, binary: false }, guard)
+        }
+        Format::Plain => Guarded::boxed(body, guard),
     };
     Ok(Opened::Stream(stream, unverified_end, format != Format::Tar && format != Format::Plain, shrink))
+}
+
+/// A plain file's pages, given back once it turns out to be binary.
+///
+/// A plain file is kept in the cache: it may be a live log another process
+/// is writing. But a search reads a binary file to its end, and a sweep of
+/// /var/log would pull gigabytes of journals, wtmp and core dumps into the
+/// cache, the harm the cache handling exists to prevent. A text log has no
+/// NUL in it, so the first NUL settles it: from there macOS reads uncached,
+/// and Linux drops the file's pages once it has been read. The one live log
+/// with NULs, reopened at its old offset after copytruncate, is written by
+/// appending, and loses no page its writer reads: `FADV_DONTNEED` drops
+/// clean pages only.
+struct BinaryCache<R> {
+    inner: R,
+    file: File,
+    binary: bool,
+}
+
+impl<R: Read> Read for BinaryCache<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if !self.binary && memchr::memchr(0, &buf[..n]).is_some() {
+            self.binary = true;
+            crate::resource::prepare(&self.file, true);
+        }
+        Ok(n)
+    }
+}
+
+impl<R> Drop for BinaryCache<R> {
+    fn drop(&mut self) {
+        if self.binary {
+            crate::resource::finish(&self.file, true);
+        }
+    }
 }
 
 /// What follows a compressed stream that has ended: the end of the input

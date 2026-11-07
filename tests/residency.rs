@@ -65,6 +65,32 @@ fn no_drop_cache_keeps_the_pages() {
             "--no-drop-cache left only {res}/{np} pages resident; the flag is not being honoured");
 }
 
+/// A plain file stays cached: it may be a live log. One found to be binary
+/// is read to its end now, and goes, as an archive does: a sweep of /var/log
+/// must not leave its journals and core dumps in the cache.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_binary_plain_file_leaves_the_cache_and_a_text_one_stays() {
+    let text = helpers::bulky_log();
+    let mut bin = b"header\0".to_vec();
+    bin.extend_from_slice(&text);
+    for (name, body, kept) in [("live.log", &text, true), ("core.1", &bin, false)] {
+        let f = helpers::raw(name, body);
+        helpers::evict(&f.path);
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_trg"))
+            .args(["NOT IN THERE", f.path.to_str().unwrap()])
+            .output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{name}: {}", String::from_utf8_lossy(&out.stderr));
+        let (res, np) = helpers::resident_pages(&f.path);
+        println!("after trg on {name}: {res}/{np} pages resident");
+        if kept {
+            assert!(res * 2 > np, "{name}: only {res}/{np} pages resident; a text file must stay cached");
+        } else {
+            assert!(res * 20 < np, "{name}: {res}/{np} pages resident; a binary file must leave the cache");
+        }
+    }
+}
+
 /// The first decision, before any worker has started: trg contributes no load
 /// yet, so the whole load average is someone else's.
 #[test]

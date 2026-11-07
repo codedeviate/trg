@@ -51,8 +51,10 @@ cases = [
 failed = False
 try:
     for c in cases:
-        code, out, err = run(c, timeout=30)
-        bad = code not in (0, 1, 2)
+        # An endless stream is read until stopped, as rg and grep read it.
+        endless = c == ["NEEDLE", "/dev/zero"]
+        code, out, err = run(c, timeout=3 if endless else 30)
+        bad = code != "TIMEOUT" if endless else code not in (0, 1, 2)
         failed |= bad
         shown = " ".join(x if len(x) < 30 else f"{x[:12]}…({len(x)})" for x in c)
         err = err[:150].decode(errors="replace").replace("\n", "|")

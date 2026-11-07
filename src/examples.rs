@@ -197,9 +197,9 @@ pub const SECTIONS: &[Section] = &[
             Example {
                 cmd: "trg -a 'Segmentation fault' -g 'core.*' logs/web-2026-08-23.tgz",
                 exit: 0,
-                says: "Search binary members as text. Without -a a member with NUL \
-                       bytes, like this core dump, is skipped and the same command \
-                       exits 1.",
+                says: "Print the matching lines of binary members. Without -a a \
+                       member with NUL bytes, like this core dump, is still searched, \
+                       but a hit shows only as `binary file matches`.",
             },
         ],
     },

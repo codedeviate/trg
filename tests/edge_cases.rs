@@ -89,42 +89,31 @@ fn list_members_needs_no_pattern() {
     assert_eq!(c, Some(0), "listed members is a 0, stderr={err}");
 }
 
-/// `-c` was the only mode that went completely silent on a member that matched
-/// and then hit binary data: `SummarySink` squashes its count to zero, so
-/// stdout stayed empty while the exit code stayed 0. A script doing
-/// `n=$(trg -c PAT a.tgz); ((n>0))` reads that as "clean".
-///
-/// stdout must not change — it is rg-compatible and the count really is
-/// unknown — so the correction is a stderr note. The exit code does not move
-/// either: everything was read.
+/// `-c` on a member that matched and then hit binary data counts every
+/// match, as `rg --binary -c` does. Under the old stop-at-NUL reading the
+/// printer squashed such a count to nothing, and trg said so on stderr.
 #[test]
-fn count_mode_says_on_stderr_when_binary_data_suppressed_the_count() {
-    // The match has to be reported *before* the binary byte is seen, which
-    // means they must land in different buffer fills: grep-searcher's default
-    // buffer is 8 KiB, so the NUL goes well past that.
+fn count_mode_counts_a_member_that_matched_and_then_hit_binary_data() {
+    // The match and the NUL land in different buffer fills: grep-searcher's
+    // buffer is 64 KiB, so the NUL goes well past that.
     let mut body = b"NEEDLE here\n".to_vec();
     for i in 0..4000 {
         body.extend_from_slice(format!("filler line {i} padding padding padding\n").as_bytes());
     }
-    body.extend_from_slice(b"trailing\x00\x00binary\n");
+    body.extend_from_slice(b"trailing\x00\x00binary NEEDLE\n");
     let f = helpers::tgz("cb.tgz", &[("logs/big.log", &body)]);
     let p = f.path.to_str().unwrap();
 
     let (out, err, c) = run(&["-c", "NEEDLE", p]);
-    assert!(out.is_empty(), "stdout stays rg-compatible and empty, got {out}");
-    assert_eq!(c, Some(0), "the archive was read in full and it matched");
-    assert!(
-        err.contains("logs/big.log") && err.contains("count suppressed"),
-        "-c must not go silent about a suppressed count, stderr={err}"
-    );
+    assert_eq!(out, format!("{p}:logs/big.log:2\n"));
+    assert!(err.is_empty(), "{err}");
+    assert_eq!(c, Some(0));
 
-    // The other modes were never silent and must stay unchanged.
     let (l_out, l_err, _) = run(&["-l", "NEEDLE", p]);
     assert!(l_out.contains("logs/big.log"), "got {l_out}");
     assert!(l_err.is_empty(), "-l has nothing to warn about, got {l_err}");
-    let (_, q_err, q_c) = run(&["-q", "NEEDLE", p]);
-    assert_eq!(q_c, Some(0));
-    assert!(q_err.is_empty(), "-q prints nothing, including notes: {q_err}");
+    let (never, _, _) = run(&["--color", "never", "NEEDLE", p]);
+    assert!(!never.contains('\x1b'), "{never:?}");
 }
 
 #[test]
@@ -322,13 +311,13 @@ fn color_always_colours_and_a_pipe_does_not() {
     assert!(!never.contains('\x1b'), "{never:?}");
 }
 
-/// A NUL a few KB into a member makes it binary before anything is searched,
-/// as rg skips such a file, in every format alike. gzip and xz return short
-/// reads, so the searcher's first buffer used to stop before the NUL: the
-/// line above it matched, and a `.tgz` was a 0 where the same member in a
-/// `.tar.zst` was a 1.
+/// A NUL a few KB into a member makes it binary before anything is printed,
+/// in every format alike: the match above it shows as `binary file matches`,
+/// as `rg --binary` shows it. gzip and xz return short reads, so the
+/// searcher's first buffer used to stop before the NUL, and a `.tgz` printed
+/// the line where the same member in a `.tar.zst` did not.
 #[test]
-fn a_member_binary_in_its_first_buffer_is_skipped_in_every_format() {
+fn a_member_binary_in_its_first_buffer_is_reported_alike_in_every_format() {
     let mut body = b"NEEDLE early\n".to_vec();
     for i in 0..300 {
         body.extend_from_slice(format!("line {i} of plain text\n").as_bytes());
@@ -345,14 +334,18 @@ fn a_member_binary_in_its_first_buffer_is_skipped_in_every_format() {
         helpers::zip("b.zip", m),
         helpers::raw("b.log", &body),
     ];
+    let nul = body.iter().position(|&b| b == 0).unwrap();
+    let want = format!(": binary file matches (found \"\\0\" byte around offset {nul})\n");
     for f in &fixtures {
         let (out, err, c) = run(&["NEEDLE", f.path.to_str().unwrap()]);
-        assert_eq!((out.as_str(), c), ("", Some(1)), "{}: {err}", f.path.display());
+        assert!(out.ends_with(&want), "{}: {out}", f.path.display());
+        assert_eq!(out.lines().count(), 1, "{}: {out}", f.path.display());
+        assert_eq!(c, Some(0), "{}: {err}", f.path.display());
     }
 }
 
-/// A zip inside an archive is not opened, and its bytes read as binary, so
-/// it was skipped without a word. A note says so; the exit code stays what
+/// A zip inside an archive is not opened, and its bytes read as binary: a
+/// compressed entry cannot match. A note says so; the exit code stays what
 /// the rest of the archive earns.
 #[test]
 fn a_zip_inside_an_archive_gets_a_note() {
@@ -361,18 +354,22 @@ fn a_zip_inside_an_archive_gets_a_note() {
     let p = f.path.to_str().unwrap();
     let (out, err, c) = run(&["NEEDLE", p]);
     assert_eq!(out, "");
-    assert_eq!(err.trim(), format!("trg: {p}:logs/inner.zip: a zip inside the archive; its entries are not searched"));
+    assert_eq!(err.trim(), format!("trg: {p}:logs/inner.zip: a zip inside the archive; its entries are not opened"));
     assert_eq!(c, Some(1));
 
-    // A tar too, compressed or not: `tar -cf month.tar day*.tgz`.
+    // A tar too, compressed or not: `tar -cf month.tar day*.tgz`. Its bytes
+    // are searched, so a hit shows, but only as one binary file.
     let day = helpers::tar_bytes(&[("access.log", b"NEEDLE inside\n")]);
     for (name, bytes) in [("logs/day.tar", day.clone()), ("logs/day.tgz", helpers::gzip_bytes(&day))] {
         let t = helpers::tar_plain("month.tar", &[(name, &bytes)]);
         let p = t.path.to_str().unwrap();
         let (out, err, c) = run(&["NEEDLE", p]);
-        assert_eq!(out, "");
-        assert_eq!(err.trim(), format!("trg: {p}:{name}: a tar inside the archive; its members are not searched"));
-        assert_eq!(c, Some(1));
+        assert!(out.starts_with(&format!("{p}:{name}: binary file matches")), "{out}");
+        assert_eq!(
+            err.trim(),
+            format!("trg: {p}:{name}: a tar inside the archive; searched as one binary file, not member by member")
+        );
+        assert_eq!(c, Some(0));
     }
 
     // Only archives: a gzip member is opened and searched, and needs no note.
@@ -381,10 +378,10 @@ fn a_zip_inside_an_archive_gets_a_note() {
     assert_eq!((err.as_str(), c), ("", Some(0)));
 }
 
-/// A plain binary file is left at its first NUL, so the read stops short of
-/// the end on purpose. The check for a log truncated mid-read took that for
-/// a file that shrank, and every binary file over 64 KiB, /var/log/wtmp and
-/// lastlog among them, was a 2.
+/// A plain binary file used to be left at its first NUL, short of its end
+/// on purpose. The check for a log truncated mid-read took that for a file
+/// that shrank, and every binary file over 64 KiB, /var/log/wtmp and lastlog
+/// among them, was a 2. Read whole now, it must still be a clean 1.
 #[test]
 fn a_large_binary_plain_file_is_a_clean_one_not_a_shrunk_file() {
     let mut bin = vec![0u8; 300_000];
@@ -394,4 +391,27 @@ fn a_large_binary_plain_file_is_a_clean_one_not_a_shrunk_file() {
     assert!(out.is_empty(), "{out}");
     assert!(err.is_empty(), "{err}");
     assert_eq!(c, Some(1));
+}
+
+/// Past binary data the default printer takes no more lines, and refusing
+/// one stops the search. With `-B` the line before a match came first, so the
+/// search ended before the match: a 1 for a member that matched. rg 15.2
+/// does the same with `rg --binary -B1`.
+#[test]
+fn before_context_does_not_hide_a_match_after_binary_data() {
+    let body = b"x\n\0\nctx\nNEEDLE\n";
+    let fixtures = [helpers::raw("bc.log", body), helpers::tgz("bc.tgz", &[("logs/bc.log", body)])];
+    for f in &fixtures {
+        let p = f.path.to_str().unwrap();
+        for ctx in [["-B", "1"], ["-C", "2"], ["-A", "1"]] {
+            let (out, err, c) = run(&[ctx[0], ctx[1], "NEEDLE", p]);
+            assert!(out.ends_with(": binary file matches (found \"\\0\" byte around offset 2)\n"), "{ctx:?} {p}: {out}");
+            assert_eq!(out.lines().count(), 1, "{ctx:?} {p}: {out}");
+            assert_eq!(c, Some(0), "{ctx:?} {p}: {err}");
+        }
+        for mode in ["-c", "-l", "-q", "--json"] {
+            let (_, err, c) = run(&[mode, "-B", "1", "NEEDLE", p]);
+            assert_eq!(c, Some(0), "{mode} {p}: {err}");
+        }
+    }
 }

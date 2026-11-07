@@ -105,7 +105,6 @@ fn run() -> anyhow::Result<RunStatus> {
         sep: args.archive_sep,
         globs: globs.as_ref(),
         drop_cache: args.drop_cache,
-        count_mode: args.print.mode == print::Mode::Count,
         aliases: &aliases,
         sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
         separate: search::separates_members(&args.search, args.print.mode),
