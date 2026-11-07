@@ -9,6 +9,15 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Fixed
+
+- An encrypted zip entry is reported as `encrypted, and trg takes no
+  password: not searched`. The message was stuffr's, and advised building
+  it with zip's `aes-crypto` feature, which no build of trg would use.
+- Zero padding after a legacy lz4 stream (`lz4 -l`) is padding whatever its
+  length. A length that was not a multiple of four left a part of a block
+  size over and was an exit 2, "cut off mid-frame".
+
 ## [0.15.0] - 2026-11-06
 
 ### Changed

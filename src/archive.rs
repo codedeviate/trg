@@ -377,6 +377,24 @@ where
     out
 }
 
+/// stuffr's reason a zip entry could not be read, said the way trg can act
+/// on it. An encrypted entry's text suggests building stuffr with zip's
+/// `aes-crypto` feature, advice for stuffr's own command line: trg takes no
+/// password, so no build of it would read the entry, and ZipCrypto entries
+/// are not AES at all.
+///
+/// Matched on zip's own text, `ZipError::PASSWORD_REQUIRED`; a test holds
+/// the two together, as zip is not a dependency of trg itself.
+const PASSWORD_REQUIRED: &str = "Password required to decrypt file";
+
+fn zip_entry_error(e: &stuffr_core::Error) -> String {
+    let text = e.to_string();
+    if text.contains(PASSWORD_REQUIRED) {
+        return "encrypted, and trg takes no password: not searched".into();
+    }
+    text
+}
+
 /// Walk a zip's members through stuffr's zip container.
 ///
 /// Read from the central directory, by seeking, which is why a zip goes
@@ -425,7 +443,7 @@ where
             Ok(Some(e)) => e,
             Ok(None) => break,
             Err(e) => {
-                out.errors.push(format!("zip entry {index}: {e}"));
+                out.errors.push(format!("zip entry {index}: {}", zip_entry_error(&e)));
                 failed_in_a_row += 1;
                 if failed_in_a_row >= GIVE_UP_AFTER {
                     out.errors.push(format!("gave up after {GIVE_UP_AFTER} unreadable zip entries in a row"));
@@ -721,6 +739,14 @@ impl<R: Read> Read for EndMark<R> {
             None => self.zeros + n as u64,
         };
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod zip_error_tests {
+    #[test]
+    fn the_password_text_is_zips() {
+        assert_eq!(super::PASSWORD_REQUIRED, zip::result::ZipError::PASSWORD_REQUIRED);
     }
 }
 

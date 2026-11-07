@@ -66,6 +66,11 @@ pub struct Lz4Track<R> {
     then: Then,
     block_sum: bool,
     content_sum: bool,
+    /// The last legacy block size read was 0. lz4 writes no such block, so
+    /// it is zero padding after the stream, which legacy frames, with no end
+    /// mark, read as a run of empty blocks: 3,000 zeros read cleanly, and
+    /// 3,001 left one zero byte over and were "cut off mid-frame".
+    legacy_padding: bool,
 }
 
 impl<R: Read> Lz4Track<R> {
@@ -77,6 +82,7 @@ impl<R: Read> Lz4Track<R> {
             then: Then::Magic,
             block_sum: false,
             content_sum: false,
+            legacy_padding: false,
         }
     }
 
@@ -84,7 +90,10 @@ impl<R: Read> Lz4Track<R> {
     /// that was cut off, once the input is exhausted.
     pub fn mid_frame(&self) -> bool {
         match self.state {
-            State::Magic | State::LegacySize => !self.field.is_empty(),
+            State::Magic => !self.field.is_empty(),
+            State::LegacySize => {
+                !self.field.is_empty() && !(self.legacy_padding && self.field.iter().all(|&b| b == 0))
+            }
             State::Lost | State::Padding => false,
             _ => true,
         }
@@ -162,7 +171,10 @@ impl<R: Read> Lz4Track<R> {
             State::Magic => self.magic(word()),
             State::LegacySize => match word() {
                 m if m == FRAME || m == LEGACY || is_skippable(m) => self.magic(m),
-                n => self.skip(n as u64, Then::Legacy),
+                n => {
+                    self.legacy_padding = n == 0;
+                    self.skip(n as u64, Then::Legacy)
+                }
             },
             State::SkipLen => self.skip(word() as u64, Then::Magic),
             State::Header { .. } => State::BlockSize,
@@ -219,6 +231,24 @@ mod tests {
         assert!(!t.mid_frame() && !t.lost());
         padded.extend(b"junk");
         assert!(track(&padded).lost());
+    }
+
+    /// A legacy stream, then zeros of any length: padding. One to three
+    /// bytes of a size after a real block is still a cut.
+    #[test]
+    fn zeros_after_a_legacy_stream_are_padding_whatever_their_length() {
+        let mut legacy = vec![0x02, 0x21, 0x4c, 0x18, 3, 0, 0, 0, 0x20, b'x', b'\n'];
+        assert!(!track(&legacy).mid_frame());
+        let mut cut = legacy.clone();
+        cut.push(0);
+        assert!(track(&cut).mid_frame(), "a size cut after a real block");
+        for pad in [4, 5, 6, 7, 3001] {
+            let mut p = legacy.clone();
+            p.extend(std::iter::repeat_n(0u8, pad));
+            assert!(!track(&p).mid_frame(), "{pad} zeros");
+        }
+        legacy.extend([0, 0, 0, 0, 1]);
+        assert!(track(&legacy).mid_frame(), "a non-zero byte after the padding");
     }
 
     #[test]

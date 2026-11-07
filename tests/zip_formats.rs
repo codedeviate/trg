@@ -154,7 +154,10 @@ fn an_encrypted_member_is_two_and_the_rest_is_still_searched() {
     zip(&["-q", "s.zip", "plain.log"]);
     let (out, err, c) = run(&["NEEDLE", d.path().join("s.zip").to_str().unwrap()]);
     assert_eq!(c, Some(2), "got: {out} / {err}");
-    assert!(err.contains("zip entry 1") && err.to_lowercase().contains("password"), "got: {err}");
+    assert!(err.contains("zip entry 1: encrypted, and trg takes no password"), "got: {err}");
+    // stuffr's own advice, to rebuild it with AES support, is for stuffr's
+    // command line: no build of trg would read the entry.
+    assert!(!err.contains("aes-crypto"), "got: {err}");
     assert!(out.contains("plain.log:1:NEEDLE in the open"), "stopped at the encrypted member: {out}");
     assert!(!out.contains("behind a password"));
 }
