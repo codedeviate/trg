@@ -653,6 +653,13 @@ where
     }
 
     let mut ar = tar::Archive::new(EndMark { inner: body, zeros: 0 });
+    // Read on past the end-of-archive blocks, as `tar -i` does. `cat
+    // day1.tgz day2.tgz > week.tgz` is one valid gzip holding two tars, and
+    // stopping at the first one's end left every member of the second
+    // unsearched: a 1 about a day never read. Anything after the end that is
+    // not zeros or another tar is now an error, where it was read and thrown
+    // away.
+    ar.set_ignore_zeros(true);
     let entries = match ar.entries() {
         Ok(e) => e,
         Err(e) => {

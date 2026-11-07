@@ -30,8 +30,9 @@ Expected exceptions, tallied apart rather than failed:
 - **No checksum.** A plain `.tar` has no checksum on its data, and `.Z`
   has none at all. A byte changed in either can be a silent 1. trg notes
   this for `.Z` on stderr.
-- **Cut in the padding.** A plain `.tar` or a `.Z` cut after its last data
-  byte still holds every line, so finding NEEDLE is a 0.
+- **Cut in the padding.** A plain `.tar` cut at a block boundary inside
+  its end-of-archive zeros still holds every line, so finding NEEDLE is a 0.
+  Cut anywhere else in them, it is a 2: the blocks are incomplete.
 - **Too short.** A file shorter than its format's signature, a few bytes,
   or under 262 bytes for a plain tar, reads as plain bytes.
 

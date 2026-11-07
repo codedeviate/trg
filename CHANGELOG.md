@@ -9,6 +9,18 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Fixed
+
+- Concatenated archives are searched whole: `cat day1.tgz day2.tgz >
+  week.tgz` is one valid archive holding two tars, in every format, and the
+  search stopped at the first tar's end. A match in the second was an exit
+  1 about members never read. trg now reads on past the end-of-archive
+  blocks, as `tar -i` does.
+- Bytes after a tar's end that are neither zeros nor another tar are an
+  exit 2. They were read and thrown away. A byte changed in a `.tar.Z`,
+  which has no checksum, gave a silent 1 in 68 of 100 torture runs; now
+  none do.
+
 ## [0.15.1] - 2026-11-07
 
 ### Fixed

@@ -209,3 +209,46 @@ fn zero_padding_after_the_compressed_stream_is_not_an_error() {
         assert_eq!(c, Some(2), "{ext}: junk after the padding");
     }
 }
+
+/// `cat day1.tgz day2.tgz > week.tgz` is one valid gzip holding two tars.
+/// Stopping at the first tar's end left the second unsearched: a 1 about a
+/// day never read. Read on, as `tar -i` does, in every format.
+#[test]
+fn concatenated_archives_are_all_searched() {
+    let one = helpers::tar_bytes(&[("day1.log", b"first ERR\n")]);
+    let two = helpers::tar_bytes(&[("day2.log", b"second FATAL\n")]);
+    let cat = |f: fn(&[u8]) -> Vec<u8>| [f(&one), f(&two)].concat();
+    let formats: [(&str, Vec<u8>); 6] = [
+        ("tar", [one.clone(), two.clone()].concat()),
+        ("tgz", cat(helpers::gzip_bytes)),
+        ("tar.bz2", cat(helpers::bz2_bytes)),
+        ("tar.zst", cat(helpers::zstd_plain_bytes)),
+        ("tar.lz4", cat(helpers::lz4_bytes)),
+        ("tar.xz", cat(helpers::xz_bytes)),
+    ];
+    for (ext, bytes) in formats {
+        let f = helpers::raw(&format!("week.{ext}"), &bytes);
+        let p = f.path.to_str().unwrap();
+        let (out, err, c) = helpers::run_trg(&["FATAL", p]);
+        assert!(out.ends_with("day2.log:1:second FATAL\n"), "{ext}: {out}");
+        assert!(err.is_empty(), "{ext}: {err}");
+        assert_eq!(c, Some(0), "{ext}");
+        let (out, _, c) = helpers::run_trg(&["-T", p]);
+        assert_eq!(out.lines().count(), 2, "{ext}: {out}");
+        assert_eq!(c, Some(0), "{ext}");
+    }
+}
+
+/// What follows a tar's end must be zeros or another tar. Anything else was
+/// read and thrown away; it may be the rest of something.
+#[test]
+fn bytes_after_a_tars_end_that_are_not_a_tar_are_a_two() {
+    let mut t = helpers::tar_bytes(&[("a.log", b"x\n")]);
+    t.extend(std::iter::repeat_n(b'j', 2048));
+    for (ext, bytes) in [("tar", t.clone()), ("tgz", helpers::gzip_bytes(&t))] {
+        let f = helpers::raw(&format!("j.{ext}"), &bytes);
+        let (_, err, c) = helpers::run_trg(&["NOPE", f.path.to_str().unwrap()]);
+        assert!(!err.is_empty(), "{ext}");
+        assert_eq!(c, Some(2), "{ext}");
+    }
+}
