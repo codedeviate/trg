@@ -218,7 +218,12 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
             // and so its offset: past the sniff, not at the start.
             drop(body);
             let mut file = guard.file.try_clone()?;
-            io::Seek::rewind(&mut file)?;
+            if io::Seek::rewind(&mut file).is_err() {
+                anyhow::bail!(
+                    "a zip, which is read by seeking to its directory at the end, \
+                     cannot be read from a pipe: save it to a file first"
+                );
+            }
             return Ok(Opened::Zip(file, guard));
         }
         Format::Tar | Format::Plain => Guarded::boxed(body, guard),

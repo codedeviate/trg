@@ -57,3 +57,13 @@ fn dash_twice_reads_standard_input_once() {
     assert_eq!(out, "<stdin>:1:ERR\n");
     assert_eq!(c, Some(0));
 }
+
+/// A zip is read from its directory at the end, by seeking, which a pipe
+/// cannot do. A 2, saying so.
+#[test]
+fn a_zip_on_a_pipe_is_a_two_that_says_why() {
+    let zip = helpers::zip_bytes(&[("a.log", b"ERR\n")], helpers::ZipMethod::Deflated);
+    let (_, err, c) = run(&["ERR", "-"], &zip);
+    assert!(err.contains("<stdin>: a zip") && err.contains("cannot be read from a pipe"), "{err}");
+    assert_eq!(c, Some(2));
+}

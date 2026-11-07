@@ -45,9 +45,9 @@ When an item moves into the codebase, delete it here and record it in
 
 - **Archives inside archives.** A zip or tar member that is itself a zip or
   tar is searched as bytes. The one level of nesting is for compression, and
-  an archive in an archive is a container, not a compression. A zip member
-  gets a note on stderr, as its bytes read as binary and would otherwise be
-  skipped without a word.
+  an archive in an archive is a container, not a compression. A zip or tar
+  member, compressed or not, gets a note on stderr, as its bytes read as
+  binary and would otherwise be skipped without a word.
 - **Other stuffr formats** (cpio, ar, lha, arj, arc, zoo; brotli, snappy,
   lzip, lzma). Reachable the same way zip and `.Z` were, a cargo feature
   each, but none of them holds logs on any server trg runs on.

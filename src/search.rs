@@ -353,7 +353,7 @@ struct FullReads<'a> {
     /// reader to repeat, because a decoder need not say it twice, and an
     /// error lost here is a 1 about a member never read to its end.
     pending: Option<io::Error>,
-    /// The member's first bytes, to tell a zip inside the archive.
+    /// The member's first bytes, to tell an archive inside the archive.
     head: Vec<u8>,
 }
 
@@ -381,8 +381,8 @@ impl io::Read for FullReads<'_> {
                 Err(e) => return Err(e),
             }
         }
-        if self.head.len() < 8 {
-            let more = (8 - self.head.len()).min(n);
+        if self.head.len() < crate::sniff::SNIFF_LEN {
+            let more = (crate::sniff::SNIFF_LEN - self.head.len()).min(n);
             self.head.extend_from_slice(&buf[..more]);
         }
         Ok(n)
@@ -398,8 +398,9 @@ pub struct MemberVerdict {
     pub printed: bool,
     /// With `--json`, the printer's statistics for the member.
     pub stats: Option<grep_printer::Stats>,
-    /// The member is itself a zip, whose entries were not searched.
-    pub zip: bool,
+    /// The member is itself an archive, `"zip"` or `"tar"`, whose members
+    /// were not searched.
+    pub container: Option<&'static str>,
 }
 
 /// Search one member, returning whether it matched.
@@ -430,7 +431,11 @@ fn search_member(
             let mut capped = MaxCount::new(sink, limit, separate);
             let mut reads = FullReads::new(&mut *r);
             let res = s.search_reader(m, &mut reads, &mut capped);
-            let zip = crate::sniff::sniff(&reads.head) == crate::sniff::Format::Zip;
+            let container = match crate::sniff::sniff(&reads.head) {
+                crate::sniff::Format::Zip => Some("zip"),
+                crate::sniff::Format::Tar => Some("tar"),
+                _ => None,
+            };
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.
@@ -439,7 +444,7 @@ fn search_member(
             let printed = capped.printed();
             res.map_err(io::Error::other)?;
             let $sink = &capped.inner;
-            MemberVerdict { matched: hit, count_suppressed: suppressed, printed, stats: $stats, zip }
+            MemberVerdict { matched: hit, count_suppressed: suppressed, printed, stats: $stats, container }
         }};
     }
 
@@ -488,10 +493,13 @@ pub fn search_archive(
         // so the correction goes to stderr, where it costs a pipeline nothing
         // and an operator everything.
         // Archives inside archives are not opened (OUT-OF-SCOPE.md), and a
-        // zip reads as binary, so it was skipped without a word: a 1 that
-        // says nothing about the logs inside it.
-        if v.zip {
-            notes.push(format!("{display}: a zip inside the archive; its entries are not searched"));
+        // zip or a tar reads as binary, so it was skipped without a word: a 1
+        // that says nothing about the logs inside it. A tar is the likelier:
+        // `tar -cf month.tar day*.tgz` holds tgzs, unwrapped here to tars.
+        match v.container {
+            Some("zip") => notes.push(format!("{display}: a zip inside the archive; its entries are not searched")),
+            Some(kind) => notes.push(format!("{display}: a {kind} inside the archive; its members are not searched")),
+            None => {}
         }
         if ctx.count_mode && v.count_suppressed {
             notes.push(format!("{display}: binary data; count suppressed"));

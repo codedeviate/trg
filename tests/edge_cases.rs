@@ -364,7 +364,18 @@ fn a_zip_inside_an_archive_gets_a_note() {
     assert_eq!(err.trim(), format!("trg: {p}:logs/inner.zip: a zip inside the archive; its entries are not searched"));
     assert_eq!(c, Some(1));
 
-    // Only zips: a gzip member is opened and searched, and needs no note.
+    // A tar too, compressed or not: `tar -cf month.tar day*.tgz`.
+    let day = helpers::tar_bytes(&[("access.log", b"NEEDLE inside\n")]);
+    for (name, bytes) in [("logs/day.tar", day.clone()), ("logs/day.tgz", helpers::gzip_bytes(&day))] {
+        let t = helpers::tar_plain("month.tar", &[(name, &bytes)]);
+        let p = t.path.to_str().unwrap();
+        let (out, err, c) = run(&["NEEDLE", p]);
+        assert_eq!(out, "");
+        assert_eq!(err.trim(), format!("trg: {p}:{name}: a tar inside the archive; its members are not searched"));
+        assert_eq!(c, Some(1));
+    }
+
+    // Only archives: a gzip member is opened and searched, and needs no note.
     let g = helpers::tgz_nested_gz("g.tgz", "logs/a.log.gz", b"NEEDLE\n");
     let (_, err, c) = run(&["NEEDLE", g.path.to_str().unwrap()]);
     assert_eq!((err.as_str(), c), ("", Some(0)));
