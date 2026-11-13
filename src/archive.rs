@@ -191,7 +191,13 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     let rdr = io::BufReader::with_capacity(64 * 1024, f);
     let (head, body) = peek(rdr)?;
 
-    let format = sniff(&head);
+    let mut format = sniff(&head);
+    // A zip behind a self-extractor's stub or a script starts as anything
+    // but a zip, and was searched as the bytes of a plain file: a 1 about
+    // entries never inflated. Its end says what it is, where it can be read.
+    if format == Format::Plain && md.is_file() && crate::zip_check::ends_as_zip(&dup, size) {
+        format = Format::Zip;
+    }
     let asked = drop_cache;
     let drop_cache = drop_cache && format != Format::Plain;
     // Not for a zip: it is read by seeking, a header and an entry at a time,
@@ -476,6 +482,8 @@ where
     use stuffr_formats::zip::{Zip, ZIP};
 
     let mut out = Outcome::default();
+    // For measuring the file against its directory, once it has been read.
+    let whole = file.try_clone();
     let opened = stuffr_core::FileSource::from_file(file).and_then(|src| {
         let resolved =
             stuffr_core::resolve(Box::new(src), ZIP, Zip.caps(), &stuffr_core::StreamPolicy::Exact)?;
@@ -514,16 +522,36 @@ where
             }
         };
         failed_in_a_row = 0;
-        if !matches!(entry.meta().kind, EntryKind::File) {
-            continue;
-        }
         let name = entry.meta().name.clone();
+        // A directory or a symlink is structure, not a member, as in a tar:
+        // unless it holds data. An entry named `x.log/`, or one with a
+        // symlink's mode, can carry a whole log, which `unzip -p` prints and
+        // a search that skipped it by its kind called clean. A symlink's
+        // data is its target, which stuffr has already read.
+        let mut held = io::Cursor::new(Vec::new());
+        match &entry.meta().kind {
+            EntryKind::File => {}
+            EntryKind::Symlink { target } if !target.is_empty() => held = io::Cursor::new(target.clone().into_bytes()),
+            EntryKind::Symlink { .. } | EntryKind::Hardlink { .. } => continue,
+            _ => {
+                let mut first = [0u8; 1];
+                match entry.reader().read(&mut first) {
+                    Ok(0) => continue,
+                    Ok(_) => held = io::Cursor::new(first.to_vec()),
+                    Err(e) => {
+                        out.errors.push(format!("{name}: {e}"));
+                        continue;
+                    }
+                }
+            }
+        }
         out.members_seen += 1;
         if globs.is_some_and(|set| !set.is_match(&name)) {
             continue;
         }
         // A zip entry carries its own CRC-32, stored or not, checked at its end.
-        match decode_member(&name, entry.reader(), &mut f).and_then(|rest| finish(rest, entry.reader())) {
+        let mut member = held.chain(entry.reader());
+        match decode_member(&name, &mut member, &mut f).and_then(|rest| finish(rest, &mut member)) {
             Ok(()) => out.members_searched += 1,
             Err(e) => out.errors.push(format!("{name}: {e}")),
         }
@@ -535,6 +563,27 @@ where
     // knowable.
     for w in &archive.fidelity().warnings {
         out.errors.push(w.to_string());
+    }
+
+    // The directory is the zip's own account of itself, and the walk above
+    // read what it lists. What the file holds besides is not known to it.
+    match whole {
+        Ok(whole) => {
+            let checked = crate::zip_check::check(&whole);
+            // The end record's count is what the reader stops at; the
+            // directory itself can hold more, and unzip reads them all.
+            let read = (index - 1) as u64;
+            if let Some(records) = checked.records
+                && records != read
+            {
+                out.errors.push(format!(
+                    "the zip's directory lists {records} entries and {read} were read: \
+                     its end record does not count them all"
+                ));
+            }
+            out.errors.extend(checked.errors);
+        }
+        Err(e) => out.errors.push(format!("could not check the zip against its directory: {e}")),
     }
     out
 }
