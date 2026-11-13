@@ -67,7 +67,8 @@ ARCHIVES:
                           Matching nothing is exit 2
     -T, --list-members    list member paths without searching. Takes no
                           PATTERN at all: every positional is a PATH, so
-                          `trg -T *.tgz` lists all of them
+                          `trg -T *.tgz` lists all of them. Not with -q,
+                          -l, -c or --json, which are about a search
         --archive-sep C   separator in archive:member:line (default ':')
         --no-sort         allow output in completion order
 
@@ -215,6 +216,19 @@ fn deprecate(a: &mut Args, flag: &'static str) {
     }
 }
 
+/// Print `text` to stdout and exit 0, or 2 when it could not be written.
+/// `print!` panics on a failed write, and `trg --help | head -1` is one.
+fn say_and_exit(text: &str) -> ! {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let code = match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => 0,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        Err(_) => 2,
+    };
+    std::process::exit(code)
+}
+
 pub fn parse() -> anyhow::Result<Args> {
     parse_from(std::env::args_os())
 }
@@ -352,17 +366,10 @@ where
                 a.load_limit = Some(n);
             }
 
-            Short('h') | Long("help") => {
-                print!("{HELP}");
-                std::process::exit(0);
-            }
-            Long("examples") => {
-                print!("{}", crate::examples::render());
-                std::process::exit(0);
-            }
+            Short('h') | Long("help") => say_and_exit(HELP),
+            Long("examples") => say_and_exit(&crate::examples::render()),
             Short('V') | Long("version") => {
-                println!("trg {}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
+                say_and_exit(&format!("trg {}\n", env!("CARGO_PKG_VERSION")))
             }
 
             Value(v) => positionals.push(v),
@@ -390,6 +397,20 @@ where
     } else {
         print::Mode::Standard
     };
+
+    // `-T` lists and searches nothing, so an output mode that is about a
+    // search has nothing to apply to. They were accepted and ignored:
+    // `trg -T -q x.tgz` printed the listing, and `-T -c` no count. A flag
+    // that cannot be honoured is refused, like any other the mode cannot use.
+    if a.list_members && a.print.mode != print::Mode::Standard {
+        let flag = match a.print.mode {
+            print::Mode::Quiet => "-q",
+            print::Mode::FilesWithMatches => "-l",
+            print::Mode::Count => "-c",
+            _ => "--json",
+        };
+        anyhow::bail!("-T lists members without searching, so {flag} has nothing to apply to: give one or the other");
+    }
 
     // Split the banked positionals into PATTERN and PATH.
     //
@@ -614,6 +635,16 @@ mod tests {
             a.paths,
             vec![PathBuf::from("a.tgz"), PathBuf::from("b.tgz"), PathBuf::from("c.tgz")]
         );
+    }
+
+    #[test]
+    fn dash_t_refuses_the_output_modes_it_would_ignore() {
+        for flag in ["-q", "-l", "-c", "--json"] {
+            let e = err(&["-T", flag, "a.tgz"]);
+            assert!(e.contains(flag) && e.contains("-T"), "{flag}: {e}");
+        }
+        // Flags that do apply to a listing, or change nothing in one.
+        p(&["-T", "-g", "*.log", "--archive-sep", "!", "-A", "1", "a.tgz"]);
     }
 
     /// Flag order must not change the reading: `-T` after the positionals is
