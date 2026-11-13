@@ -34,10 +34,11 @@ pub struct Outcome {
     /// telling an operator and must not turn a 0 or a 1 into a 2.
     pub notes: Vec<String>,
     /// The archive's format cannot tell a complete file from a truncated one
-    /// (`.Z`), so "read everything" is only as true as the file. Set by
+    /// (`.Z`, or a stream ending in a legacy lz4 frame), so "read everything"
+    /// is only as true as the file. The format's name, set by
     /// [`walk_archive`]; what to say about it is the caller's, since only
     /// the caller knows whether anything matched.
-    pub unverified_end: bool,
+    pub unverified_end: Option<&'static str>,
     /// Whether any member got past `-g` (and, for a plain file, its path past
     /// `-g`). Set by the caller, which applies the plain-file half.
     pub kept: bool,
@@ -138,14 +139,19 @@ fn open_stream(path: &Path, drop_cache: bool) -> anyhow::Result<Box<dyn Read>> {
 /// An input, opened: a byte stream with its outer compression removed, or a
 /// zip, which is read by seeking and so cannot be one.
 enum Opened {
-    /// The stream, whether its format can detect its own truncation,
-    /// whether it is compressed (and so has a checksum to read up to), and
-    /// for a plain file, how to tell that it shrank while it was read.
-    Stream(Box<dyn Read>, bool, bool, Option<Shrink>),
+    /// The stream, the format that cannot detect its own truncation if it
+    /// is one (known for lz4 only once the stream has been read), whether it
+    /// is compressed (and so has a checksum to read up to), and for a plain
+    /// file, how to tell that it shrank while it was read.
+    Stream(Box<dyn Read>, Unverified, bool, Option<Shrink>),
     /// The file, rewound, and the guard that drops its pages when the walk is
     /// over.
     Zip(File, CacheGuard),
 }
+
+/// The name of a format that cannot tell a cut-off file from a whole one,
+/// shared with the reader that finds out which it is reading.
+type Unverified = std::rc::Rc<std::cell::Cell<Option<&'static str>>>;
 
 /// A plain file's size when it was opened, and a handle sharing its read
 /// offset.
@@ -195,7 +201,10 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     crate::resource::prepare(&dup, drop_cache && format != Format::Zip);
     let guard = CacheGuard { file: dup, drop_cache };
 
-    let unverified_end = format == Format::CompressZ;
+    let unverified_end = Unverified::default();
+    if format == Format::CompressZ {
+        unverified_end.set(Some(".Z"));
+    }
     // Only a regular file has a size to fall short of. A pipe has none, and
     // asking it for its offset fails, which made `zcat x.gz | trg ERR -` with
     // no match a 2.
@@ -207,7 +216,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
         Format::Gzip => Guarded::boxed(gzip_streams(body)?, guard),
         // `zstd`'s reader is streaming like flate2's, so the bounded-memory
         // guarantee and the cache guard carry over unchanged.
-        Format::Zstd => Guarded::boxed(zstd_decoder(body)?, guard),
+        Format::Zstd => Guarded::boxed(zstd_or_lz4(&head, body, Some(unverified_end.clone()))?, guard),
         // Multi-stream, like `MultiGzDecoder`: `cat a.xz b.xz` is a valid .xz
         // and `xz -d` decodes all of it.
         Format::Xz => Guarded::boxed(liblzma::read::XzDecoder::new_multi_decoder(body), guard),
@@ -215,7 +224,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
         // lbzip2 write one stream per chunk, so a single-stream decoder would
         // stop after the first few hundred kilobytes and report the rest clean.
         Format::Bzip2 => Guarded::boxed(bzip2_streams(body)?, guard),
-        Format::Lz4 => Guarded::boxed(lz4_decoder(&head, body)?, guard),
+        Format::Lz4 => Guarded::boxed(lz4_decoder(&head, body, Some(unverified_end.clone()))?, guard),
         Format::CompressZ => Guarded::boxed(compress_z_decoder(body)?, guard),
         Format::Zip => {
             // Shares the open file description with the reader just dropped,
@@ -406,10 +415,12 @@ where
     F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
     let mut out = match open_input(path, drop_cache) {
-        Ok(Opened::Stream(r, unverified_end, compressed, shrink)) => Outcome {
-            unverified_end,
-            ..walk_stream(r, globs, compressed, shrink, f)
-        },
+        Ok(Opened::Stream(r, unverified_end, compressed, shrink)) => {
+            // Read after the walk: only the end of an lz4 stream says
+            // whether it ended in a legacy frame.
+            let out = walk_stream(r, globs, compressed, shrink, f);
+            Outcome { unverified_end: unverified_end.get(), ..out }
+        }
         // The guard outlives the walk, so the pages go once it is over.
         Ok(Opened::Zip(file, _guard)) => for_each_zip_member(file, globs, f),
         Err(e) => {
@@ -549,6 +560,62 @@ fn zstd_decoder<R: Read>(r: R) -> io::Result<impl Read> {
     Streams::new(Buffered::with_capacity(64 * 1024, r), frame, zstd::stream::read::Decoder::finish)
 }
 
+/// What follows a skippable frame too long for the sniff window to see past:
+/// zstd, or lz4, which shares the skippable magics.
+///
+/// The sniff calls such a head zstd, the format that writes them in practice,
+/// and an lz4 frame behind one was "Unknown frame descriptor", a 2 for a
+/// file `lz4 -d` reads. So the leading skippable frames are read through
+/// here, on the stream, and the magic after them decides. A head the sniff
+/// saw past goes to zstd untouched, and what is not lz4 goes to it behind an
+/// empty skippable frame in place of those read: the zstd decoder then sees
+/// what it always did, a skippable frame and whatever follows, even nothing.
+fn zstd_or_lz4<R: Read>(head: &[u8], mut r: R, legacy_end: Option<Unverified>) -> io::Result<impl Read + use<R>> {
+    let mut magic = Vec::new();
+    let mut stepped = false;
+    if crate::sniff::skippable_prefix(head).is_none() {
+        stepped = true;
+        loop {
+            magic.clear();
+            (&mut r).take(4).read_to_end(&mut magic)?;
+            // Of four bytes, only a skippable magic has a frame running on.
+            if magic.len() < 4 || crate::sniff::skippable_prefix(&magic).is_some() {
+                break;
+            }
+            let mut len = [0u8; 4];
+            r.read_exact(&mut len)?;
+            let len = u32::from_le_bytes(len) as u64;
+            if io::copy(&mut (&mut r).take(len), &mut io::sink())? < len {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "cut off inside a skippable frame"));
+            }
+        }
+    }
+    let lz4 = sniff(&magic) == Format::Lz4;
+    if stepped && !lz4 {
+        magic.splice(..0, [0x50, 0x2A, 0x4D, 0x18, 0, 0, 0, 0]);
+    }
+    let r = io::Cursor::new(magic).chain(r);
+    Ok(if lz4 {
+        ZstdOrLz4::Lz4(lz4_decoder(&[], r, legacy_end)?)
+    } else {
+        ZstdOrLz4::Zstd(zstd_decoder(r)?)
+    })
+}
+
+enum ZstdOrLz4<Z, L> {
+    Zstd(Z),
+    Lz4(L),
+}
+
+impl<Z: Read, L: Read> Read for ZstdOrLz4<Z, L> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            ZstdOrLz4::Zstd(z) => z.read(buf),
+            ZstdOrLz4::Lz4(l) => l.read(buf),
+        }
+    }
+}
+
 /// An lz4 decoder positioned past any leading skippable frames, reading every
 /// frame to the end of the input.
 ///
@@ -556,10 +623,13 @@ fn zstd_decoder<R: Read>(r: R) -> io::Result<impl Read> {
 /// at a skippable frame. Only a leading one is stepped over here, which the
 /// sniff has already measured; one between data frames is still an error, and
 /// so still a 2 rather than a short read.
-fn lz4_decoder<R: Read>(head: &[u8], mut r: R) -> io::Result<Lz4Frames<R>> {
+///
+/// `legacy_end` is told when the stream turns out to end in a legacy frame.
+fn lz4_decoder<R: Read>(head: &[u8], mut r: R, legacy_end: Option<Unverified>) -> io::Result<Lz4Frames<R>> {
     let skip = crate::sniff::skippable_prefix(head).unwrap_or(0) as u64;
     io::copy(&mut (&mut r).take(skip), &mut io::sink())?;
-    Ok(Lz4Frames(lz4_flex::frame::FrameDecoder::new(io::BufReader::new(crate::lz4_track::Lz4Track::new(r)))))
+    let input = io::BufReader::new(crate::lz4_track::Lz4Track::new(r));
+    Ok(Lz4Frames { dec: Some(lz4_flex::frame::FrameDecoder::new(input)), legacy_end })
 }
 
 /// lz4_flex's decoder reports end-of-file at the end of every frame, so that
@@ -572,17 +642,35 @@ fn lz4_decoder<R: Read>(head: &[u8], mut r: R) -> io::Result<Lz4Frames<R>> {
 /// of an unfinished frame, so at the end of the input the framing is checked
 /// too: a stream cut off mid-frame is an error, not a shorter file
 /// (<https://github.com/PSeitz/lz4_flex/issues/246>).
-struct Lz4Frames<R: Read>(lz4_flex::frame::FrameDecoder<io::BufReader<crate::lz4_track::Lz4Track<R>>>);
+///
+/// A legacy frame ends only where its input does, and the decoder would read
+/// the magic of a frame after it as a block size. [`Lz4Track`] ends the input
+/// before that magic instead, and a new decoder starts on it: the old one
+/// still thinks itself inside the legacy frame.
+///
+/// [`Lz4Track`]: crate::lz4_track::Lz4Track
+struct Lz4Frames<R: Read> {
+    /// `None` only while one decoder is exchanged for the next.
+    dec: Option<lz4_flex::frame::FrameDecoder<io::BufReader<crate::lz4_track::Lz4Track<R>>>>,
+    legacy_end: Option<Unverified>,
+}
 
 impl<R: Read> Read for Lz4Frames<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         use io::BufRead;
         loop {
-            let n = self.0.read(buf)?;
+            let dec = self.dec.as_mut().expect("a decoder between reads");
+            let n = dec.read(buf)?;
             if n > 0 || buf.is_empty() {
                 return Ok(n);
             }
-            let input = self.0.get_mut();
+            let input = dec.get_mut();
+            if input.fill_buf()?.is_empty() && input.get_ref().at_frame_start() {
+                let mut input = self.dec.take().expect("checked above").into_inner();
+                input.get_mut().resume();
+                self.dec = Some(lz4_flex::frame::FrameDecoder::new(input));
+                continue;
+            }
             if input.fill_buf()?.is_empty() || at_end(input)? {
                 let t = input.get_ref();
                 if t.lost() {
@@ -590,6 +678,9 @@ impl<R: Read> Read for Lz4Frames<R> {
                 }
                 if t.mid_frame() {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "lz4 stream cut off mid-frame"));
+                }
+                if let (true, Some(end)) = (t.ends_legacy(), &self.legacy_end) {
+                    end.set(Some("the legacy lz4 format (lz4 -l)"));
                 }
                 return Ok(0);
             }
@@ -640,10 +731,10 @@ where
     };
     match sniff(&inner_head) {
         Format::Gzip => decoded(&mut gzip_streams(&mut inner)?),
-        Format::Zstd => decoded(&mut zstd_decoder(&mut inner)?),
+        Format::Zstd => decoded(&mut zstd_or_lz4(&inner_head, &mut inner, None)?),
         Format::Xz => decoded(&mut liblzma::read::XzDecoder::new_multi_decoder(&mut inner)),
         Format::Bzip2 => decoded(&mut bzip2_streams(&mut inner)?),
-        Format::Lz4 => decoded(&mut lz4_decoder(&inner_head, &mut inner)?),
+        Format::Lz4 => decoded(&mut lz4_decoder(&inner_head, &mut inner, None)?),
         // No unverified-end note here, unlike a whole `.Z` file: the archive
         // around the member records its length, and a cut archive is a 2.
         Format::CompressZ => decoded(&mut compress_z_decoder(&mut inner)?),

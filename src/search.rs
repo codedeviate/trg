@@ -517,9 +517,12 @@ pub fn search_archive(
     // A note, not an error: nothing is known to be missing, and the format
     // offers no way to find out. But a 1 is someone's "the logs are clean",
     // and this file cannot back it up.
-    if out.unverified_end && !matched && out.errors.is_empty() {
+    if let Some(format) = out.unverified_end
+        && !matched
+        && out.errors.is_empty()
+    {
         notes.push(format!(
-            "{}: no match, but .Z cannot detect truncation: a cut-off file reads as a shorter one",
+            "{}: no match, but {format} cannot detect truncation: a cut-off file reads as a shorter one",
             crate::source::display(path)
         ));
     }

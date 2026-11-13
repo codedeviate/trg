@@ -8,8 +8,16 @@
 //! an exit 1 about data never read. This reader passes every byte through
 //! unchanged and only follows the framing, so the caller can ask, once the
 //! input is exhausted, whether it ended between frames. Reported upstream
-//! as <https://github.com/PSeitz/lz4_flex/issues/246>; once fixed, this
-//! module can go.
+//! as <https://github.com/PSeitz/lz4_flex/issues/246>.
+//!
+//! One thing it does withhold. A legacy (`lz4 -l`) frame has no end mark: it
+//! ends where the input does, or where a magic number stands in a block
+//! size's place, as in `cat a.lz4 b.lz4`. lz4_flex reads that magic as the
+//! size of a block too big and fails, where `lz4 -d` reads on. So the input
+//! is ended there instead ([`Lz4Track::at_frame_start`]), for the caller to
+//! start a fresh decoder on what follows ([`Lz4Track::resume`]). To end it
+//! exactly there, reads are cut to the framing: a field, or a block's data,
+//! at a time.
 
 use std::io::{self, Read};
 
@@ -71,6 +79,13 @@ pub struct Lz4Track<R> {
     /// mark, read as a run of empty blocks: 3,000 zeros read cleanly, and
     /// 3,001 left one zero byte over and were "cut off mid-frame".
     legacy_padding: bool,
+    /// A legacy block size being read, kept from the caller until all four
+    /// bytes say whether it is a size or the next frame's magic.
+    held: Vec<u8>,
+    /// Bytes read from `inner` and followed, for the caller to take next.
+    ready: Vec<u8>,
+    /// `held` is a magic: the input reads as ended until [`Self::resume`].
+    frame_start: bool,
 }
 
 impl<R: Read> Lz4Track<R> {
@@ -83,7 +98,32 @@ impl<R: Read> Lz4Track<R> {
             block_sum: false,
             content_sum: false,
             legacy_padding: false,
+            held: Vec::with_capacity(4),
+            ready: Vec::with_capacity(4),
+            frame_start: false,
         }
+    }
+
+    /// Whether the input reads as ended only because the frame after a
+    /// legacy one starts here.
+    pub fn at_frame_start(&self) -> bool {
+        self.frame_start
+    }
+
+    /// Go on reading, from the magic that ended the legacy frame.
+    pub fn resume(&mut self) {
+        if std::mem::take(&mut self.frame_start) {
+            let magic = std::mem::take(&mut self.held);
+            self.follow(&magic);
+            self.ready = magic;
+        }
+    }
+
+    /// Whether the bytes seen so far end in a legacy frame, which has no end
+    /// mark and no checksum: cut between two blocks, it is a shorter stream
+    /// and nothing can tell.
+    pub fn ends_legacy(&self) -> bool {
+        matches!(self.state, State::LegacySize)
     }
 
     /// Whether the bytes seen so far end inside a frame: true for a stream
@@ -206,9 +246,52 @@ impl<R: Read> Lz4Track<R> {
 
 impl<R: Read> Read for Lz4Track<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.follow(&buf[..n]);
-        Ok(n)
+        loop {
+            if buf.is_empty() || self.frame_start {
+                return Ok(0);
+            }
+            if !self.ready.is_empty() {
+                let n = self.ready.len().min(buf.len());
+                buf[..n].copy_from_slice(&self.ready[..n]);
+                self.ready.drain(..n);
+                return Ok(n);
+            }
+            let want = match self.state {
+                // With part of a size in `field`, the input ended inside it.
+                State::LegacySize if self.field.is_empty() => {
+                    let mut word = [0u8; 4];
+                    let n = self.inner.read(&mut word[..4 - self.held.len()])?;
+                    self.held.extend_from_slice(&word[..n]);
+                    if n > 0 && self.held.len() < 4 {
+                        continue;
+                    }
+                    if self.held.is_empty() {
+                        return Ok(0);
+                    }
+                    let magic = <[u8; 4]>::try_from(&self.held[..])
+                        .map(u32::from_le_bytes)
+                        .is_ok_and(|m| m == FRAME || m == LEGACY || is_skippable(m));
+                    if magic {
+                        self.state = State::Magic;
+                        self.frame_start = true;
+                        return Ok(0);
+                    }
+                    // A size, or the few bytes of one the input ends in.
+                    let size = std::mem::take(&mut self.held);
+                    self.follow(&size);
+                    self.ready = size;
+                    continue;
+                }
+                State::Skip(n) => n.min(buf.len() as u64) as usize,
+                State::Header { need } => need - self.field.len(),
+                State::Lost => buf.len(),
+                _ => 4 - self.field.len(),
+            };
+            let want = want.min(buf.len());
+            let n = self.inner.read(&mut buf[..want])?;
+            self.follow(&buf[..n]);
+            return Ok(n);
+        }
     }
 }
 
@@ -249,6 +332,46 @@ mod tests {
         }
         legacy.extend([0, 0, 0, 0, 1]);
         assert!(track(&legacy).mid_frame(), "a non-zero byte after the padding");
+    }
+
+    /// The magic after a legacy frame is where the input is ended, with
+    /// nothing of it handed over until the caller resumes.
+    #[test]
+    fn a_magic_after_a_legacy_frame_ends_the_input_until_resumed() {
+        let one = [0x02, 0x21, 0x4c, 0x18, 3, 0, 0, 0, 0x20, b'x', b'\n'];
+        let mut two = one.to_vec();
+        two.extend(one);
+        let mut t = Lz4Track::new(&two[..]);
+        let mut got = Vec::new();
+        io::copy(&mut t, &mut got).unwrap();
+        assert_eq!(got, one);
+        assert!(t.at_frame_start() && !t.mid_frame() && !t.lost());
+        t.resume();
+        io::copy(&mut t, &mut got).unwrap();
+        assert_eq!(got, two);
+        assert!(!t.at_frame_start() && !t.mid_frame() && t.ends_legacy());
+    }
+
+    /// Every byte still comes through, whatever the framing and however
+    /// small the reads.
+    #[test]
+    fn every_byte_is_passed_through() {
+        let mut b = vec![0x04, 0x22, 0x4d, 0x18, 0x40, 0x40, 0xc0, 5, 0, 0, 0x80, 1, 2, 3, 4, 5, 0, 0, 0, 0];
+        b.extend([0; 7]);
+        b.extend([0x02, 0x21, 0x4c, 0x18, 3, 0, 0, 0, 0x20, b'x', b'\n', 9, 9]);
+        for step in [1, 2, 3, 5, 64] {
+            let mut t = Lz4Track::new(&b[..]);
+            let mut got = Vec::new();
+            let mut buf = vec![0u8; step];
+            loop {
+                match t.read(&mut buf).unwrap() {
+                    0 => break,
+                    n => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            assert_eq!(got, b, "reads of {step}");
+            assert!(t.mid_frame(), "ends in two bytes of a size");
+        }
     }
 
     #[test]
