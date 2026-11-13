@@ -415,6 +415,9 @@ pub struct MemberVerdict {
     /// The member is itself an archive, `"zip"` or `"tar"`, whose members
     /// were not searched.
     pub container: Option<&'static str>,
+    /// What was searched is itself compressed, in this format: the level
+    /// under the one that was removed.
+    pub compressed: Option<&'static str>,
 }
 
 /// Search one member, returning whether it matched.
@@ -445,11 +448,13 @@ fn search_member(
             let mut capped = MaxCount::new(sink, limit, separate, $standard);
             let mut reads = FullReads::new(&mut *r);
             let res = s.search_reader(m, &mut reads, &mut capped);
-            let container = match crate::sniff::sniff(&reads.head) {
+            let head = crate::sniff::sniff(&reads.head);
+            let container = match head {
                 crate::sniff::Format::Zip => Some("zip"),
                 crate::sniff::Format::Tar => Some("tar"),
                 _ => None,
             };
+            let compressed = still_compressed(head);
             // Read the verdict before propagating: a member that matched and
             // *then* hit a read error still matched, and the error is recorded
             // separately by the caller.
@@ -457,7 +462,7 @@ fn search_member(
             let printed = capped.printed();
             res.map_err(io::Error::other)?;
             let $sink = &capped.inner;
-            MemberVerdict { matched: hit, printed, stats: $stats, container }
+            MemberVerdict { matched: hit, printed, stats: $stats, container, compressed }
         }};
     }
 
@@ -466,6 +471,22 @@ fn search_member(
         crate::print::Printer::Summary(p) => run!(p, false, |_sink| None),
         crate::print::Printer::Json(p) => run!(p, false, |sink| Some(sink.stats().clone())),
     })
+}
+
+/// The name of a compression format, for data that sniffs as one after a
+/// level was already removed. The same sniff that opens a file: whatever
+/// trg would have decompressed at the top level, it has not read here.
+fn still_compressed(head: crate::sniff::Format) -> Option<&'static str> {
+    use crate::sniff::Format;
+    match head {
+        Format::Gzip => Some("gzip"),
+        Format::Bzip2 => Some("bzip2"),
+        Format::Xz => Some("xz"),
+        Format::Zstd => Some("zstd"),
+        Format::Lz4 => Some("lz4"),
+        Format::CompressZ => Some(".Z"),
+        Format::Zip | Format::Tar | Format::Plain => None,
+    }
 }
 
 /// Search one archive into `printer`'s buffer.
@@ -485,6 +506,7 @@ pub fn search_archive(
     let mut kept = false;
     let mut stats: Option<grep_printer::Stats> = None;
     let mut notes: Vec<String> = Vec::new();
+    let mut unread: Vec<String> = Vec::new();
     let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
         let Some(shown) = plain_name(member, path, ctx) else {
             return Ok(crate::archive::Rest::Leave);
@@ -510,6 +532,13 @@ pub fn search_archive(
             )),
             None => {}
         }
+        // One level of compression is removed (the bomb guard) and this
+        // member had two: `x.log.gz.gz`. Its lines were not read, only the
+        // compressed bytes under the first level, so it is an error and
+        // not a note: without it this was a 1 with no word.
+        if let Some(kind) = v.compressed {
+            unread.push(format!("{display}: still compressed ({kind}) after one level was removed: not searched"));
+        }
         // A member that matched is a 0 either way, so `-q`, `-l` and `-m`
         // keep stopping early; one that did not must be read to its end.
         Ok(if v.matched { crate::archive::Rest::Leave } else { crate::archive::Rest::Verify })
@@ -526,6 +555,7 @@ pub fn search_archive(
             crate::source::display(path)
         ));
     }
+    out.errors.extend(unread);
     out.matched = matched;
     out.kept = kept;
     out.stats = stats;
