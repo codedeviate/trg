@@ -571,3 +571,25 @@ fn more_workers_than_descriptors_wait_instead_of_failing() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 300, "{err}");
 }
 
+// ---- 8. -T on a whole compressed file ---------------------------------------
+
+/// `-T` on a cut-off `.tgz` is a 2: the walk to its end finds the cut. A
+/// compressed file that is not a tar was listed and never read, so the same
+/// cut was a 0.
+#[test]
+fn listing_a_cut_off_compressed_file_is_a_two() {
+    let d = tempfile::tempdir().unwrap();
+    let whole = helpers::gzip_bytes(&b"a line of log\n".repeat(50_000));
+    let (ok, cut) = (d.path().join("ok.log.gz"), d.path().join("cut.log.gz"));
+    std::fs::write(&ok, &whole).unwrap();
+    std::fs::write(&cut, &whole[..whole.len() / 2]).unwrap();
+
+    let (out, code, err) = stdout_of(&["-T"], std::slice::from_ref(&ok));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(String::from_utf8_lossy(&out).contains("ok.log.gz"));
+
+    let (out, code, err) = stdout_of(&["-T"], std::slice::from_ref(&cut));
+    assert_eq!(code, Some(2), "a cut-off file listed as whole");
+    assert!(err.contains("cut.log.gz"), "{err}");
+    assert!(String::from_utf8_lossy(&out).contains("cut.log.gz"), "it is still listed");
+}

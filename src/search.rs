@@ -711,7 +711,12 @@ pub fn list_members(
         };
         listed = true;
         writeln!(out, "{}", ctx.shown(display_path(shown, member, sep)))?;
-        Ok(crate::archive::Rest::Leave)
+        // A whole compressed file is its own one member, and reading it to
+        // its end is what walking a tar to its end is for a `.tgz`: `-T` on a
+        // cut-off `x.log.gz` was a 0 where `-T` on a cut-off `.tgz` is a 2.
+        // A member with a name is left alone: the walk reads past it anyway,
+        // through the archive's own checksum, and its content is not `-T`'s.
+        Ok(if member.is_empty() { crate::archive::Rest::Verify } else { crate::archive::Rest::Leave })
     });
     // `-T` has no notion of a match, so "listed something" is what stands in
     // for it: `trg -T ... ; echo $?` should say 1 when an archive held nothing
