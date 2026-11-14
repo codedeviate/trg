@@ -45,8 +45,50 @@ fn main() {
     std::process::exit(code);
 }
 
+/// Which of stdin and stdout were closed when the process started, as bits 0
+/// and 1.
+///
+/// Read before `main`, from a constructor, because by `main` it is too late:
+/// Rust's runtime opens `/dev/null` on any of the three standard descriptors
+/// it finds closed, so that a file opened later cannot land on one of them.
+/// After that `trg line a.tgz >&-` wrote its lines to `/dev/null` and
+/// exited 0, and nothing in `main` could tell it from `> /dev/null`, which
+/// is a fair way to ask for the exit code alone.
+static CLOSED_AT_START: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+extern "C" fn note_closed_fds() {
+    let mut closed = 0;
+    for fd in 0..2 {
+        // The only failure F_GETFD has is EBADF: not an open descriptor.
+        if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 {
+            closed |= 1 << fd;
+        }
+    }
+    CLOSED_AT_START.store(closed, std::sync::atomic::Ordering::Relaxed);
+}
+
+// The C runtime calls every function listed in this section before `main`,
+// and so before Rust's runtime starts. Where there is no such section the
+// check is simply not made.
+#[used]
+#[cfg_attr(any(target_os = "linux", target_os = "android", target_os = "freebsd"), unsafe(link_section = ".init_array"))]
+#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__mod_init_func"))]
+static NOTE_CLOSED_FDS: extern "C" fn() = note_closed_fds;
+
+fn closed_at_start(fd: u8) -> bool {
+    CLOSED_AT_START.load(std::sync::atomic::Ordering::Relaxed) & (1 << fd) != 0
+}
+
 fn run() -> anyhow::Result<RunStatus> {
+    // Output with nowhere to go is output lost, and that is a 2 before
+    // anything is read. (A closed stderr is nobody's loss but its owner's.)
+    if closed_at_start(1) {
+        anyhow::bail!("standard output is closed: nothing could be written to it");
+    }
     let mut args = trg::cli::parse()?;
+    if closed_at_start(0) && args.paths.iter().any(|p| trg::source::is_stdin(p)) {
+        anyhow::bail!("standard input is closed: there is nothing for - to read");
+    }
     for flag in &args.deprecated {
         warn(&format!("{flag} is deprecated and has no effect: trg always streams since 0.7.0"));
     }
