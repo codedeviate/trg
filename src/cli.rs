@@ -48,7 +48,11 @@ OUTPUT (same meaning as ripgrep):
         --escape WHEN     show control bytes from logs and member names as
                           text (\\x1b) instead of sending them to the
                           terminal: auto | always | never (auto: on a tty,
-                          per stream; piped output stays byte-exact)
+                          per stream; piped output stays byte-exact).
+                          A newline or carriage return in a file or member
+                          name is shown as \\x0a or \\x0d under auto as
+                          well, piped or not, so that a name cannot start
+                          a line of its own; never leaves those raw too
 
     If several output modes are given, the most suppressive wins: -q, then
     -l, then -c, then --json.

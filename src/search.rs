@@ -321,6 +321,19 @@ pub struct SearchCtx<'a> {
     /// `--` between members, as rg puts it between files: the default output
     /// with context on. See [`separates_members`].
     pub separate: bool,
+    /// Show a newline in a name as `\x0a`: see [`crate::escape::name`]. Off
+    /// for `--escape never`, and for `--json`, which has its own escapes.
+    pub one_line_names: bool,
+}
+
+impl SearchCtx<'_> {
+    /// A member's name as the output shows it.
+    fn shown(&self, display: String) -> String {
+        match crate::escape::name(&display) {
+            std::borrow::Cow::Owned(s) if self.one_line_names => s,
+            _ => display,
+        }
+    }
 }
 
 /// Whether the output puts `--` between members, as rg does between files.
@@ -489,7 +502,7 @@ pub fn search_archive(
         let Some(shown) = plain_name(member, path, ctx) else {
             return Ok(crate::archive::Rest::Leave);
         };
-        let display = display_path(shown, member, sep);
+        let display = ctx.shown(display_path(shown, member, sep));
         kept = true;
         let separate = ctx.separate && printed;
         let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
@@ -559,7 +572,7 @@ pub fn list_members(
             return Ok(crate::archive::Rest::Leave);
         };
         listed = true;
-        writeln!(out, "{}", display_path(shown, member, sep))?;
+        writeln!(out, "{}", ctx.shown(display_path(shown, member, sep)))?;
         Ok(crate::archive::Rest::Leave)
     });
     // `-T` has no notion of a match, so "listed something" is what stands in

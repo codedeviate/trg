@@ -1,5 +1,6 @@
 use termcolor::{BufferWriter, ColorChoice};
-use trg::{cli::ColorArg, escape, print, search};
+// `warn`, never `eprintln!`, which panics when stderr cannot be written.
+use trg::{cli::ColorArg, escape, escape::warn, print, search};
 
 /// The exit-code contract, in one place.
 ///
@@ -37,7 +38,7 @@ fn main() {
     let code = match run() {
         Ok(status) => status.exit_code(),
         Err(e) => {
-            eprintln!("trg: {}", escape::for_stderr(&format!("{e:#}")));
+            warn(&escape::for_stderr(&format!("{e:#}")));
             RunStatus { matched: false, partial: true }.exit_code()
         }
     };
@@ -47,7 +48,7 @@ fn main() {
 fn run() -> anyhow::Result<RunStatus> {
     let mut args = trg::cli::parse()?;
     for flag in &args.deprecated {
-        eprintln!("trg: {flag} is deprecated and has no effect: trg always streams since 0.7.0");
+        warn(&format!("{flag} is deprecated and has no effect: trg always streams since 0.7.0"));
     }
 
     // Stay out of the way before doing any work: a nice'd, idle-I/O process
@@ -84,7 +85,11 @@ fn run() -> anyhow::Result<RunStatus> {
         ColorArg::Auto => tty,
     };
     args.print.escape = escape_for(std::io::IsTerminal::is_terminal(&std::io::stdout()));
-    escape::set_stderr(escape_for(std::io::IsTerminal::is_terminal(&std::io::stderr())), false);
+    // A newline in a name is another matter from a control byte: it forges
+    // a line for whatever reads the output, a pipe as much as a person. So
+    // names are kept to one line unless `--escape never` asked for the bytes.
+    let one_line_names = args.escape != ColorArg::Never;
+    escape::set_stderr(escape_for(std::io::IsTerminal::is_terminal(&std::io::stderr())), one_line_names);
     let escape_stdout = args.print.escape;
     let bw = BufferWriter::stdout(if color { ColorChoice::Always } else { ColorChoice::Never });
 
@@ -96,7 +101,7 @@ fn run() -> anyhow::Result<RunStatus> {
         trg::source::resolve_all(&args.paths, archive_globs.as_ref());
     let globs = trg::source::build_globs(&args.globs)?;
     for e in &path_errors {
-        eprintln!("trg: {}", escape::for_stderr(&e.to_string()));
+        warn(&escape::diagnostic(e));
         partial = true;
     }
 
@@ -108,6 +113,8 @@ fn run() -> anyhow::Result<RunStatus> {
         aliases: &aliases,
         sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
         separate: search::separates_members(&args.search, args.print.mode),
+        // JSON has its own escape for a newline, and gets the name as it is.
+        one_line_names: one_line_names && args.print.mode != print::Mode::Json,
     };
     let mut printed_any = false;
     // `--json` ends with a summary record, as rg's does: the run's elapsed
@@ -175,7 +182,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // the same thing twice in a row, but they leave `partial` alone:
             // nothing went unread, so the exit code is not theirs to change.
             for n in &done.outcome.notes {
-                eprintln!("trg: {}", escape::for_stderr(n));
+                warn(&escape::diagnostic(n));
             }
             // Report this archive's own errors even if stdout has gone away:
             // stderr is usually still attached, and it is where the diagnosis
@@ -187,7 +194,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // was read in full and is a clean 1. A whole run of them is not,
             // below.
             for e in &done.outcome.errors {
-                eprintln!("trg: {}", escape::for_stderr(e));
+                warn(&escape::diagnostic(e));
                 partial = true;
             }
             r
@@ -199,7 +206,7 @@ fn run() -> anyhow::Result<RunStatus> {
     // and a 1 would report the logs clean. Only once some archive was read
     // through: when every one failed, its own error is the whole story.
     if globs.is_some() && read_any && !kept_any {
-        eprintln!("trg: -g matched no members in the archives searched");
+        warn("-g matched no members in the archives searched");
         partial = true;
     }
 
@@ -234,7 +241,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // A genuine write failure — a full disk, say. Output that was lost
             // is output that went unseen, which is the same class of harm as
             // input that went unread, so it is a 2.
-            eprintln!("trg: write error: {e}");
+            warn(&format!("write error: {e}"));
             partial = true;
         }
     }
