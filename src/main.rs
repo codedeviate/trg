@@ -1,5 +1,6 @@
 use termcolor::{BufferWriter, ColorChoice};
-use trg::{cli::ColorArg, escape, print, search};
+// `warn`, never `eprintln!`, which panics when stderr cannot be written.
+use trg::{cli::ColorArg, escape, escape::warn, print, search};
 
 /// The exit-code contract, in one place.
 ///
@@ -37,17 +38,59 @@ fn main() {
     let code = match run() {
         Ok(status) => status.exit_code(),
         Err(e) => {
-            eprintln!("trg: {}", escape::for_stderr(&format!("{e:#}")));
+            warn(&escape::for_stderr(&format!("{e:#}")));
             RunStatus { matched: false, partial: true }.exit_code()
         }
     };
     std::process::exit(code);
 }
 
+/// Which of stdin and stdout were closed when the process started, as bits 0
+/// and 1.
+///
+/// Read before `main`, from a constructor, because by `main` it is too late:
+/// Rust's runtime opens `/dev/null` on any of the three standard descriptors
+/// it finds closed, so that a file opened later cannot land on one of them.
+/// After that `trg line a.tgz >&-` wrote its lines to `/dev/null` and
+/// exited 0, and nothing in `main` could tell it from `> /dev/null`, which
+/// is a fair way to ask for the exit code alone.
+static CLOSED_AT_START: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+extern "C" fn note_closed_fds() {
+    let mut closed = 0;
+    for fd in 0..2 {
+        // The only failure F_GETFD has is EBADF: not an open descriptor.
+        if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 {
+            closed |= 1 << fd;
+        }
+    }
+    CLOSED_AT_START.store(closed, std::sync::atomic::Ordering::Relaxed);
+}
+
+// The C runtime calls every function listed in this section before `main`,
+// and so before Rust's runtime starts. Where there is no such section the
+// check is simply not made.
+#[used]
+#[cfg_attr(any(target_os = "linux", target_os = "android", target_os = "freebsd"), unsafe(link_section = ".init_array"))]
+#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__mod_init_func"))]
+static NOTE_CLOSED_FDS: extern "C" fn() = note_closed_fds;
+
+fn closed_at_start(fd: u8) -> bool {
+    CLOSED_AT_START.load(std::sync::atomic::Ordering::Relaxed) & (1 << fd) != 0
+}
+
 fn run() -> anyhow::Result<RunStatus> {
+    // Output with nowhere to go is output lost, and that is a 2 before
+    // anything is read. (A closed stderr is nobody's loss but its owner's.)
+    if closed_at_start(1) {
+        anyhow::bail!("standard output is closed: nothing could be written to it");
+    }
     let mut args = trg::cli::parse()?;
+    if closed_at_start(0) && args.paths.iter().any(|p| trg::source::is_stdin(p)) {
+        anyhow::bail!("standard input is closed: there is nothing for - to read");
+    }
     for flag in &args.deprecated {
-        eprintln!("trg: {flag} is deprecated and has no effect: trg always streams since 0.7.0");
+        warn(&format!("{flag} is deprecated and has no effect: trg always streams since 0.7.0"));
     }
 
     // Stay out of the way before doing any work: a nice'd, idle-I/O process
@@ -84,7 +127,11 @@ fn run() -> anyhow::Result<RunStatus> {
         ColorArg::Auto => tty,
     };
     args.print.escape = escape_for(std::io::IsTerminal::is_terminal(&std::io::stdout()));
-    escape::set_stderr(escape_for(std::io::IsTerminal::is_terminal(&std::io::stderr())));
+    // A newline in a name is another matter from a control byte: it forges
+    // a line for whatever reads the output, a pipe as much as a person. So
+    // names are kept to one line unless `--escape never` asked for the bytes.
+    let one_line_names = args.escape != ColorArg::Never;
+    escape::set_stderr(escape_for(std::io::IsTerminal::is_terminal(&std::io::stderr())), one_line_names);
     let escape_stdout = args.print.escape;
     let bw = BufferWriter::stdout(if color { ColorChoice::Always } else { ColorChoice::Never });
 
@@ -96,7 +143,7 @@ fn run() -> anyhow::Result<RunStatus> {
         trg::source::resolve_all(&args.paths, archive_globs.as_ref());
     let globs = trg::source::build_globs(&args.globs)?;
     for e in &path_errors {
-        eprintln!("trg: {}", escape::for_stderr(&e.to_string()));
+        warn(&escape::diagnostic(e));
         partial = true;
     }
 
@@ -107,8 +154,14 @@ fn run() -> anyhow::Result<RunStatus> {
         drop_cache: args.drop_cache,
         aliases: &aliases,
         sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
-        separate: search::separates_members(&args.search, args.print.mode),
+        // Not for `-T`: a listing has no context to keep apart.
+        separate: !args.list_members && search::separates_members(&args.search, args.print.mode),
+        search_nothing: args.search.max_count == Some(0),
+        // JSON has its own escape for a newline, and gets the name as it is.
+        one_line_names: one_line_names && args.print.mode != print::Mode::Json,
     };
+    // As the printer ends it, so one archive's `--` reads like the next's.
+    let separator: &[u8] = if args.search.crlf { b"--\r\n" } else { b"--\n" };
     let mut printed_any = false;
     // `--json` ends with a summary record, as rg's does: the run's elapsed
     // time and its statistics summed over every archive.
@@ -159,14 +212,16 @@ fn run() -> anyhow::Result<RunStatus> {
             }
             read_any |= done.outcome.errors.is_empty();
             // The `--` between archives; `search_archive` writes the ones
-            // between members of one archive. In standard mode a non-empty
-            // buffer holds lines, never a lone binary-file notice without a
-            // match before it.
+            // between members of one archive. The rule is rg's, between
+            // files: `--` goes before a file's first *line* once anything at
+            // all has been printed. So an archive whose output starts with
+            // `binary file matches` gets none before it, and still counts
+            // as output for the archive after it.
             let mut r = Ok(());
             if ctx.separate && !done.buffer.is_empty() {
-                if printed_any {
+                if printed_any && done.outcome.leads_with_line {
                     let mut sep = bw.buffer();
-                    r = std::io::Write::write_all(&mut sep, b"--\n").and_then(|()| bw.print(&sep));
+                    r = std::io::Write::write_all(&mut sep, separator).and_then(|()| bw.print(&sep));
                 }
                 printed_any = true;
             }
@@ -175,7 +230,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // the same thing twice in a row, but they leave `partial` alone:
             // nothing went unread, so the exit code is not theirs to change.
             for n in &done.outcome.notes {
-                eprintln!("trg: {}", escape::for_stderr(n));
+                warn(&escape::diagnostic(n));
             }
             // Report this archive's own errors even if stdout has gone away:
             // stderr is usually still attached, and it is where the diagnosis
@@ -187,7 +242,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // was read in full and is a clean 1. A whole run of them is not,
             // below.
             for e in &done.outcome.errors {
-                eprintln!("trg: {}", escape::for_stderr(e));
+                warn(&escape::diagnostic(e));
                 partial = true;
             }
             r
@@ -199,7 +254,7 @@ fn run() -> anyhow::Result<RunStatus> {
     // and a 1 would report the logs clean. Only once some archive was read
     // through: when every one failed, its own error is the whole story.
     if globs.is_some() && read_any && !kept_any {
-        eprintln!("trg: -g matched no members in the archives searched");
+        warn("-g matched no members in the archives searched");
         partial = true;
     }
 
@@ -234,7 +289,7 @@ fn run() -> anyhow::Result<RunStatus> {
             // A genuine write failure — a full disk, say. Output that was lost
             // is output that went unseen, which is the same class of harm as
             // input that went unread, so it is a 2.
-            eprintln!("trg: write error: {e}");
+            warn(&format!("write error: {e}"));
             partial = true;
         }
     }

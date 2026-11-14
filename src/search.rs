@@ -138,8 +138,11 @@ pub struct MaxCount<S> {
     /// when context is on. Written through the printer's own `context_break`,
     /// so it is the same separator a gap inside one member gets.
     separate: bool,
-    /// Whether any line went to the printer for this member.
+    /// Whether anything was printed for this member: a line, or `binary file
+    /// matches`.
     printed: bool,
+    /// Whether a line went to the printer for this member.
+    line: bool,
     /// The printer is the default one, which prints no line after binary
     /// data, only `binary file matches` once the search is over.
     standard: bool,
@@ -149,7 +152,7 @@ pub struct MaxCount<S> {
 
 impl<S: Sink> MaxCount<S> {
     pub fn new(inner: S, limit: Option<(u64, usize)>, separate: bool, standard: bool) -> Self {
-        Self { inner, seen: 0, limit, left: None, separate, printed: false, standard, binary: false }
+        Self { inner, seen: 0, limit, left: None, separate, printed: false, line: false, standard, binary: false }
     }
 
     /// The default printer, past binary data: it takes no more lines.
@@ -165,9 +168,15 @@ impl<S: Sink> MaxCount<S> {
         self.standard && self.binary
     }
 
-    /// Whether any line was printed for this member.
+    /// Whether anything was printed for this member.
     pub fn printed(&self) -> bool {
         self.printed
+    }
+
+    /// Whether a line was printed for this member, and so ahead of anything
+    /// else it printed: `binary file matches` comes last.
+    pub fn printed_line(&self) -> bool {
+        self.line
     }
 
     /// Called before every line goes to the printer.
@@ -177,6 +186,7 @@ impl<S: Sink> MaxCount<S> {
         }
         if !self.printed {
             self.printed = true;
+            self.line = true;
             if self.separate {
                 self.inner.context_break(s)?;
             }
@@ -278,6 +288,7 @@ impl<S: Sink> Sink for MaxCount<S> {
         self.binary = false;
         self.left = None;
         self.printed = false;
+        self.line = false;
         self.inner.begin(s)
     }
 
@@ -321,6 +332,21 @@ pub struct SearchCtx<'a> {
     /// `--` between members, as rg puts it between files: the default output
     /// with context on. See [`separates_members`].
     pub separate: bool,
+    /// `-m 0`: search nothing, as rg does. See [`search_archive`].
+    pub search_nothing: bool,
+    /// Show a newline in a name as `\x0a`: see [`crate::escape::name`]. Off
+    /// for `--escape never`, and for `--json`, which has its own escapes.
+    pub one_line_names: bool,
+}
+
+impl SearchCtx<'_> {
+    /// A member's name as the output shows it.
+    fn shown(&self, display: String) -> String {
+        match crate::escape::name(&display) {
+            std::borrow::Cow::Owned(s) if self.one_line_names => s,
+            _ => display,
+        }
+    }
 }
 
 /// Whether the output puts `--` between members, as rg does between files.
@@ -408,8 +434,11 @@ impl io::Read for FullReads<'_> {
 /// What one member's search concluded, beyond the bytes it printed.
 pub struct MemberVerdict {
     pub matched: bool,
-    /// Any line was printed for it.
+    /// Anything was printed for it.
     pub printed: bool,
+    /// What was printed starts with a line, and is not `binary file matches`
+    /// alone.
+    pub line: bool,
     /// With `--json`, the printer's statistics for the member.
     pub stats: Option<grep_printer::Stats>,
     /// The member is itself an archive, `"zip"` or `"tar"`, whose members
@@ -460,9 +489,10 @@ fn search_member(
             // separately by the caller.
             let hit = capped.saw_match();
             let printed = capped.printed();
+            let line = capped.printed_line();
             res.map_err(io::Error::other)?;
             let $sink = &capped.inner;
-            MemberVerdict { matched: hit, printed, stats: $stats, container, compressed }
+            MemberVerdict { matched: hit, printed, line, stats: $stats, container, compressed }
         }};
     }
 
@@ -504,6 +534,9 @@ pub fn search_archive(
     // first that print get a `--` ahead of them. Between archives, `main`
     // writes it.
     let mut printed = false;
+    // Whether the first thing it printed is a line: `main` puts its `--`
+    // before a line, never before a lone `binary file matches`.
+    let mut leads_with_line = false;
     let mut kept = false;
     let mut stats: Option<grep_printer::Stats> = None;
     let mut notes: Vec<String> = Vec::new();
@@ -512,11 +545,22 @@ pub fn search_archive(
         let Some(shown) = plain_name(member, path, ctx) else {
             return Ok(crate::archive::Rest::Leave);
         };
-        let display = display_path(shown, member, sep);
+        let display = ctx.shown(display_path(shown, member, sep));
         kept = true;
+        // `-m 0` asks for no match at all, and rg answers it by searching
+        // nothing: no line, no count, a 1. The searcher cannot be asked: with
+        // `-v` it reports one match before it looks at a limit of 0, and
+        // with `-A` as well, every line. The member is still read to its
+        // end below, so a cut archive is a 2 as under any other flag.
+        if ctx.search_nothing {
+            return Ok(crate::archive::Rest::Verify);
+        }
         let separate = ctx.separate && printed;
         let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
         matched |= v.matched;
+        if !printed && v.printed {
+            leads_with_line = v.line;
+        }
         printed |= v.printed;
         if let Some(st) = &v.stats {
             *stats.get_or_insert_with(grep_printer::Stats::new) += st;
@@ -540,9 +584,14 @@ pub fn search_archive(
         if let Some(kind) = v.compressed {
             unread.push(format!("{display}: still compressed ({kind}) after one level was removed: not searched"));
         }
-        // A member that matched is a 0 either way, so `-q`, `-l` and `-m`
-        // keep stopping early; one that did not must be read to its end.
-        Ok(if v.matched { crate::archive::Rest::Leave } else { crate::archive::Rest::Verify })
+        // Read to its end whatever the search found. `-q`, `-l`, `-m` and a
+        // match after binary data all stop the *search* early, and stopping
+        // the read there too made a cut or corrupt `.gz` a 0 under `-q` and
+        // a 2 without it, and a 2 in a `.tgz` under either: "anything unread
+        // is a 2, even when matches were found" has no exception for the
+        // flag or the container. Only data with a checksum is read on (see
+        // `Rest::Verify`), so `-q` on a plain file still stops at its match.
+        Ok(crate::archive::Rest::Verify)
     });
     // A note, not an error: nothing is known to be missing, and the format
     // offers no way to find out. But a 1 is someone's "the logs are clean",
@@ -558,6 +607,7 @@ pub fn search_archive(
     }
     out.errors.extend(unread);
     out.matched = matched;
+    out.leads_with_line = leads_with_line;
     out.kept = kept;
     out.stats = stats;
     out.notes = notes;
@@ -593,7 +643,7 @@ pub fn list_members(
             return Ok(crate::archive::Rest::Leave);
         };
         listed = true;
-        writeln!(out, "{}", display_path(shown, member, sep))?;
+        writeln!(out, "{}", ctx.shown(display_path(shown, member, sep)))?;
         Ok(crate::archive::Rest::Leave)
     });
     // `-T` has no notion of a match, so "listed something" is what stands in

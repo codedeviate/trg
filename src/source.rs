@@ -243,7 +243,20 @@ impl Globs {
             candidate = rest;
         }
         let by_name = candidate.file_name().map(|n| self.names.matches(n)).unwrap_or_default();
+        // The same for a leading `/` and `..`: `tar -P` keeps the one, a tar
+        // made from a sibling directory has the other, and `-g 'logs/*'`
+        // skipped `/logs/access.log` and `../logs/access.log`. Tried as
+        // well as the name as written, not in its place, so a glob spelled
+        // `/logs/*` or `../logs/*` still selects what it did.
+        use std::path::Component;
+        let mut rest = candidate.components();
+        let mut bare = rest.as_path();
+        while let Some(Component::RootDir | Component::ParentDir | Component::CurDir) = rest.next() {
+            bare = rest.as_path();
+        }
+        let by_bare = if bare == candidate { Vec::new() } else { self.paths.matches(bare) };
         let last = self.paths.matches(candidate).into_iter()
+            .chain(by_bare)
             .chain(by_name.into_iter().map(|i| self.name_at[i]))
             .max();
         self.rules.keep(last)

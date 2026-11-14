@@ -11,6 +11,9 @@ plain .tar or a .Z cut after its last data byte, in the padding, still holds
 every line and finds NEEDLE ("0, whole"); and a cut too short to hold its
 format's signature reads as plain bytes ("short"). Exits 1 if anything else
 turns up.
+
+Each cut that was a 2 is searched again with `-q ''`, which matches the first
+line and stops searching there: that must be a 2 as well.
 """
 import os
 import random
@@ -47,6 +50,13 @@ for name in fixtures():
         tally[key] = tally.get(key, 0) + 1
         if key not in (2, "short", "1+note", "0, whole"):
             bad.setdefault(name, []).append((o, n, key, out[-200:], err[-300:]))
+        # The same cut under -q, with a pattern the first line matches: the
+        # search stops there, and the cut after it must still be found.
+        if key == 2:
+            qcode, _, qerr = run(["-q", "", p], timeout=30)
+            if qcode != 2:
+                tally["-q: %s" % qcode] = tally.get("-q: %s" % qcode, 0) + 1
+                bad.setdefault(name, []).append((o, n, "-q", qcode, qerr[-300:]))
     print(f"{name:12} {tally}")
 for name, cases in bad.items():
     print(f"\n== {name}: {len(cases)} unexpected")
