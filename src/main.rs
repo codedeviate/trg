@@ -84,7 +84,7 @@ fn run() -> anyhow::Result<RunStatus> {
         ColorArg::Auto => tty,
     };
     args.print.escape = escape_for(std::io::IsTerminal::is_terminal(&std::io::stdout()));
-    escape::set_stderr(escape_for(std::io::IsTerminal::is_terminal(&std::io::stderr())));
+    escape::set_stderr(escape_for(std::io::IsTerminal::is_terminal(&std::io::stderr())), false);
     let escape_stdout = args.print.escape;
     let bw = BufferWriter::stdout(if color { ColorChoice::Always } else { ColorChoice::Never });
 
