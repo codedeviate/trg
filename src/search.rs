@@ -138,8 +138,11 @@ pub struct MaxCount<S> {
     /// when context is on. Written through the printer's own `context_break`,
     /// so it is the same separator a gap inside one member gets.
     separate: bool,
-    /// Whether any line went to the printer for this member.
+    /// Whether anything was printed for this member: a line, or `binary file
+    /// matches`.
     printed: bool,
+    /// Whether a line went to the printer for this member.
+    line: bool,
     /// The printer is the default one, which prints no line after binary
     /// data, only `binary file matches` once the search is over.
     standard: bool,
@@ -149,7 +152,7 @@ pub struct MaxCount<S> {
 
 impl<S: Sink> MaxCount<S> {
     pub fn new(inner: S, limit: Option<(u64, usize)>, separate: bool, standard: bool) -> Self {
-        Self { inner, seen: 0, limit, left: None, separate, printed: false, standard, binary: false }
+        Self { inner, seen: 0, limit, left: None, separate, printed: false, line: false, standard, binary: false }
     }
 
     /// The default printer, past binary data: it takes no more lines.
@@ -165,9 +168,15 @@ impl<S: Sink> MaxCount<S> {
         self.standard && self.binary
     }
 
-    /// Whether any line was printed for this member.
+    /// Whether anything was printed for this member.
     pub fn printed(&self) -> bool {
         self.printed
+    }
+
+    /// Whether a line was printed for this member, and so ahead of anything
+    /// else it printed: `binary file matches` comes last.
+    pub fn printed_line(&self) -> bool {
+        self.line
     }
 
     /// Called before every line goes to the printer.
@@ -177,6 +186,7 @@ impl<S: Sink> MaxCount<S> {
         }
         if !self.printed {
             self.printed = true;
+            self.line = true;
             if self.separate {
                 self.inner.context_break(s)?;
             }
@@ -278,6 +288,7 @@ impl<S: Sink> Sink for MaxCount<S> {
         self.binary = false;
         self.left = None;
         self.printed = false;
+        self.line = false;
         self.inner.begin(s)
     }
 
@@ -423,8 +434,11 @@ impl io::Read for FullReads<'_> {
 /// What one member's search concluded, beyond the bytes it printed.
 pub struct MemberVerdict {
     pub matched: bool,
-    /// Any line was printed for it.
+    /// Anything was printed for it.
     pub printed: bool,
+    /// What was printed starts with a line, and is not `binary file matches`
+    /// alone.
+    pub line: bool,
     /// With `--json`, the printer's statistics for the member.
     pub stats: Option<grep_printer::Stats>,
     /// The member is itself an archive, `"zip"` or `"tar"`, whose members
@@ -470,9 +484,10 @@ fn search_member(
             // separately by the caller.
             let hit = capped.saw_match();
             let printed = capped.printed();
+            let line = capped.printed_line();
             res.map_err(io::Error::other)?;
             let $sink = &capped.inner;
-            MemberVerdict { matched: hit, printed, stats: $stats, container }
+            MemberVerdict { matched: hit, printed, line, stats: $stats, container }
         }};
     }
 
@@ -497,6 +512,9 @@ pub fn search_archive(
     // first that print get a `--` ahead of them. Between archives, `main`
     // writes it.
     let mut printed = false;
+    // Whether the first thing it printed is a line: `main` puts its `--`
+    // before a line, never before a lone `binary file matches`.
+    let mut leads_with_line = false;
     let mut kept = false;
     let mut stats: Option<grep_printer::Stats> = None;
     let mut notes: Vec<String> = Vec::new();
@@ -517,6 +535,9 @@ pub fn search_archive(
         let separate = ctx.separate && printed;
         let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
         matched |= v.matched;
+        if !printed && v.printed {
+            leads_with_line = v.line;
+        }
         printed |= v.printed;
         if let Some(st) = &v.stats {
             *stats.get_or_insert_with(grep_printer::Stats::new) += st;
@@ -552,6 +573,7 @@ pub fn search_archive(
         ));
     }
     out.matched = matched;
+    out.leads_with_line = leads_with_line;
     out.kept = kept;
     out.stats = stats;
     out.notes = notes;

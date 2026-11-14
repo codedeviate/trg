@@ -38,6 +38,9 @@ pub struct Outcome {
     /// [`walk_archive`]; what to say about it is the caller's, since only
     /// the caller knows whether anything matched.
     pub unverified_end: bool,
+    /// Whether the archive's output starts with a line, not with a lone
+    /// `binary file matches`. Set by the caller, for the `--` before it.
+    pub leads_with_line: bool,
     /// Whether any member got past `-g` (and, for a plain file, its path past
     /// `-g`). Set by the caller, which applies the plain-file half.
     pub kept: bool,

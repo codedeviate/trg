@@ -154,11 +154,14 @@ fn run() -> anyhow::Result<RunStatus> {
         drop_cache: args.drop_cache,
         aliases: &aliases,
         sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
-        separate: search::separates_members(&args.search, args.print.mode),
+        // Not for `-T`: a listing has no context to keep apart.
+        separate: !args.list_members && search::separates_members(&args.search, args.print.mode),
         search_nothing: args.search.max_count == Some(0),
         // JSON has its own escape for a newline, and gets the name as it is.
         one_line_names: one_line_names && args.print.mode != print::Mode::Json,
     };
+    // As the printer ends it, so one archive's `--` reads like the next's.
+    let separator: &[u8] = if args.search.crlf { b"--\r\n" } else { b"--\n" };
     let mut printed_any = false;
     // `--json` ends with a summary record, as rg's does: the run's elapsed
     // time and its statistics summed over every archive.
@@ -209,14 +212,16 @@ fn run() -> anyhow::Result<RunStatus> {
             }
             read_any |= done.outcome.errors.is_empty();
             // The `--` between archives; `search_archive` writes the ones
-            // between members of one archive. In standard mode a non-empty
-            // buffer holds lines, never a lone binary-file notice without a
-            // match before it.
+            // between members of one archive. The rule is rg's, between
+            // files: `--` goes before a file's first *line* once anything at
+            // all has been printed. So an archive whose output starts with
+            // `binary file matches` gets none before it, and still counts
+            // as output for the archive after it.
             let mut r = Ok(());
             if ctx.separate && !done.buffer.is_empty() {
-                if printed_any {
+                if printed_any && done.outcome.leads_with_line {
                     let mut sep = bw.buffer();
-                    r = std::io::Write::write_all(&mut sep, b"--\n").and_then(|()| bw.print(&sep));
+                    r = std::io::Write::write_all(&mut sep, separator).and_then(|()| bw.print(&sep));
                 }
                 printed_any = true;
             }
