@@ -23,15 +23,43 @@
 use std::fs::File;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Lower our own scheduling priority. Unprivileged processes may always lower
-/// (never raise) their own, so this needs no capabilities and cannot fail in a
-/// way worth reporting.
+/// Lower our own scheduling priority, and only ever lower it.
+///
+/// `setpriority` sets an absolute niceness, so run as root from a job already
+/// at nice 19, the default 10 *raised* trg above the job that started it. A
+/// niceness at or past the one asked for is left where it is.
+///
+/// A negative value is the exception, being a request to raise it that
+/// someone typed: it is tried, and without the privilege it fails. That is
+/// said once, on stderr, and changes nothing else: every byte is read all
+/// the same, so the exit code is not its to change.
 pub fn set_priority(nice: Option<i32>) {
-    if let Some(n) = nice {
-        unsafe {
-            libc::setpriority(libc::PRIO_PROCESS, 0, n);
-        }
+    let Some(n) = nice else { return };
+    if current_niceness().is_some_and(|now| now == n || (n >= 0 && now > n)) {
+        return;
     }
+    if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, n) } != 0 {
+        let e = std::io::Error::last_os_error();
+        crate::escape::warn(&format!("--nice {n}: priority left as it was: {e}"));
+    }
+}
+
+/// Our niceness, `None` when it cannot be read. -1 is both a niceness and
+/// `getpriority`'s error value, told apart by `errno`, which therefore has to
+/// be cleared first.
+fn current_niceness() -> Option<i32> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let errno = unsafe { libc::__errno_location() };
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    let errno = unsafe { libc::__error() };
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    unsafe {
+        *errno = 0;
+        let now = libc::getpriority(libc::PRIO_PROCESS, 0);
+        (now != -1 || *errno == 0).then_some(now)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+    None
 }
 
 /// Put our reads in the idle I/O class so they queue behind Apache's.
