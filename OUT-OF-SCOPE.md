@@ -44,6 +44,8 @@ When an item moves into the codebase, delete it here and record it in
 - **Other stuffr formats** (cpio, ar, lha, arj, arc, zoo; brotli, snappy,
   lzip, lzma). Reachable the same way zip and `.Z` were, a cargo feature
   each, but none of them holds logs on any server trg runs on.
+  A file in cpio, lzip, lzma-alone, 7z, rar or lzop form is known by its
+  first bytes and is an exit 2, `not searched`, not a search of its bytes.
 
 ## Wishlist
 

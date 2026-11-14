@@ -9,6 +9,73 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Security
+
+- A tar's long-name, long-link and pax headers are read up to 1 MiB and
+  refused beyond it, an exit 2. A 4.6 MB tgz declaring a 1 GiB name took
+  1-4 GB of memory and printed the "name".
+- A newline or carriage return in a file or member name is shown as `\x0a`
+  or `\x0d`, piped or not, unless `--escape never`. A member named
+  `x\nauth.log:1:Accepted password for root` printed a second line no
+  reader could tell from a match. Diagnostics are kept to one line each.
+- On a terminal, raw C1 bytes outside well-formed UTF-8 (a lone `0x9b` is
+  CSI on an 8-bit terminal) and the bidi controls U+202A-202E and
+  U+2066-2069 are shown as text.
+- A log whose first line puts `ustar` at byte 257 is a log, not a tar: a
+  tar is now known by its header checksum. Whoever sent the first request
+  after rotation could make the day's log an exit 2 that searched nothing.
+
+### Changed
+
+- **Breaking:** `-q`, `-l`, `-m` and a match after binary data stop the
+  search early but no longer stop the read: compressed data is read to its
+  end, so a cut or corrupt `.gz`, `.xz`, `.bz2`, `.zst`, `.lz4` or zip
+  member is a 2 in every mode, as it already was inside a `.tgz`. It was a
+  0. `-q` on a large `.gz` now costs the decompression of the rest; a plain
+  file still stops at its match.
+- **Breaking:** files trg cannot read are an exit 2, `not searched`, where
+  their bytes were searched as text for a silent 1: lzip, 7z, rar, cpio,
+  lzop and lzma-alone, at the top level, under a compression, and as a
+  member; and data still compressed after one level was removed
+  (`x.log.gz.gz`). A sweep of a directory holding such files turns from 1
+  to 2.
+- **Breaking:** `-T` with `-q`, `-l`, `-c` or `--json` is a usage error;
+  the flag was ignored.
+- trg reads tars with its own reader, not the `tar` crate. Error texts
+  under `tar entry:` changed.
+- A zip entry named as a directory or flagged a symlink is searched and
+  listed when it carries data.
+- A stream ending in a legacy lz4 frame (`lz4 -l`) with no match gets the
+  note `.Z` gets: the format cannot show a cut.
+- `--nice` only ever lowers priority, and says so when it could not be set.
+
+### Fixed
+
+- Tar members under a typeflag other than `0` are searched and listed:
+  sparse (`tar -S`, old GNU and all three pax forms, expanded to the
+  original file under its real name), contiguous, unknown letters, links
+  carrying data. They were skipped without a word, a 1.
+- A tar cut at a header boundary after a member ending in 512 zero bytes
+  or more is a 2. The member's own zeros passed for the end-of-archive
+  blocks, a 1.
+- v7 tars and tars behind leading zero blocks are read as tars, so their
+  compressed members are opened.
+- A zip behind another zip or a script (`cat a.zip b.zip`, a
+  self-extractor) is a 2 naming the bytes not searched, and a file that
+  ends as a zip is read as one. Only the last zip was read, a 1.
+- A zip whose end record counts fewer entries than its directory holds, or
+  with data no entry covers, is a 2. `unzip` saw entries trg did not.
+- Concatenated legacy lz4 frames, and an lz4 frame behind a skippable frame
+  longer than 512 bytes, are read. Both were a false 2.
+- bsdtar's zero-padded `.tar.Z` (`tar -cZf - dir`) is no longer a false 2.
+- `-v -m 0` prints nothing and is a 1, as in rg; it printed lines.
+- The `--` between archives follows rg: none before a lone `binary file
+  matches`, `--\r\n` under `--crlf`, none in `-T`.
+- `-g 'logs/*'` matches a member stored as `/logs/x` or `../logs/x`.
+- A closed stderr pipe no longer aborts trg (SIGABRT); a closed stdout, or
+  a closed stdin named by `-`, is a 2 where output was lost for a 0.
+- A plain file that shrank mid-read is a 2 even when it matched.
+
 ## [0.16.0] - 2026-11-07
 
 ### Changed

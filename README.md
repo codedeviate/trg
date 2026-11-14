@@ -72,7 +72,8 @@ disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
 - Compression detected from content, not the filename: gzip, zstd, xz,
   bzip2, lz4 and Unix `compress`, each unwrapped one level, so a logrotate'd
   `access.log.1.gz`, `.zst`, `.xz`, `.bz2`, `.lz4` or `.Z` *inside* an archive
-  is searched as text.
+  is searched as text. Data still compressed under that level
+  (`x.log.gz.gz`) is an exit 2, not searched.
 - `.zip` archives, searched member by member like a tar, and `.Z`, both
   through the [stuffr](https://github.com/codedeviate/stuffr) crates. A zip
   whose local headers name different files from its central directory (a
@@ -90,7 +91,9 @@ disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
   whoever sent the request, so on a tty their control bytes are shown as text
   (`\x1b[2J`) instead of being acted on — no retitled windows, cleared
   screens, clipboard writes or hidden lines. trg's own colours still work.
-  Piped output stays byte-exact; `--escape always|never` overrides.
+  Piped output stays byte-exact, but for a newline in a name, which is shown
+  as `\x0a` so it cannot pass for a line of its own; `--escape always|never`
+  overrides.
 
 ## Install
 
