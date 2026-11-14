@@ -408,7 +408,17 @@ pub enum Rest {
 /// Read the rest of `r` when `rest` asks for it.
 fn finish(rest: Rest, r: &mut dyn Read) -> io::Result<()> {
     if rest == Rest::Verify {
-        io::copy(r, &mut io::sink())?;
+        // Not `io::copy`: through a `dyn Read` it reads 8 KiB at a time, and
+        // that made the read after `-q` slower than a whole search.
+        let mut buf = vec![0u8; 256 * 1024];
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
     }
     Ok(())
 }
