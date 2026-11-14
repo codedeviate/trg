@@ -485,7 +485,8 @@ fn still_compressed(head: crate::sniff::Format) -> Option<&'static str> {
         Format::Zstd => Some("zstd"),
         Format::Lz4 => Some("lz4"),
         Format::CompressZ => Some(".Z"),
-        Format::Zip | Format::Tar | Format::Plain => None,
+        // An unreadable format is refused where the stream is opened.
+        Format::Zip | Format::Tar | Format::Plain | Format::Unreadable(_) => None,
     }
 }
 

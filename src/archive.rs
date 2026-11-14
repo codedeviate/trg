@@ -192,6 +192,9 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
     let (head, body) = peek(rdr)?;
 
     let mut format = sniff(&head);
+    if let Some(why) = format.unreadable() {
+        anyhow::bail!(why);
+    }
     // A zip behind a self-extractor's stub or a script starts as anything
     // but a zip, and was searched as the bytes of a plain file: a 1 about
     // entries never inflated. Its end says what it is, where it can be read.
@@ -246,6 +249,7 @@ fn open_input(path: &Path, drop_cache: bool) -> anyhow::Result<Opened> {
             return Ok(Opened::Zip(file, guard));
         }
         Format::Tar => Guarded::boxed(body, guard),
+        Format::Unreadable(_) => unreachable!("refused above"),
         Format::Plain if asked => {
             let file = guard.file.try_clone()?;
             Guarded::boxed(BinaryCache { inner: body, file, binary: false }, guard)
@@ -741,7 +745,7 @@ impl<R: Read> Read for Lz4Frames<R> {
 /// front of the remainder.
 ///
 /// The return type is concrete rather than `impl Read`, so `for_each_member`
-/// can also call this on a `&mut tar::Entry<'_, R>`.
+/// can also call this on a tar member's reader.
 /// The sniffed head, and a reader that replays it before the rest.
 type Peeked<R> = (Vec<u8>, io::Chain<io::Cursor<Vec<u8>>, R>);
 
@@ -778,7 +782,11 @@ where
         finish(rest, d)?;
         Ok(rest)
     };
-    match sniff(&inner_head) {
+    let format = sniff(&inner_head);
+    if let Some(why) = format.unreadable() {
+        return Err(io::Error::other(why));
+    }
+    match format {
         Format::Gzip => decoded(&mut gzip_streams(&mut inner)?),
         Format::Zstd => decoded(&mut zstd_or_lz4(&inner_head, &mut inner, None)?),
         Format::Xz => decoded(&mut liblzma::read::XzDecoder::new_multi_decoder(&mut inner)),
@@ -791,7 +799,7 @@ where
     }
 }
 
-/// Walk every regular member, handing each to `f` as its own reader.
+/// Walk every member that has content, handing each to `f` as its own reader.
 ///
 /// Never returns `Err`: a failure on one member is recorded in `Outcome.errors`
 /// and iteration continues, because one bad archive must not abort the others.
@@ -818,7 +826,10 @@ where
 {
     let mut out = Outcome::default();
 
-    let (head, mut body) = match peek(rdr) {
+    let (head, is_tar, mut body) = match peek(rdr).and_then(|(head, body)| {
+        let (is_tar, body) = tar_after_zeros(&head, body)?;
+        Ok((head, is_tar, body))
+    }) {
         Ok(v) => v,
         Err(e) => {
             out.errors.push(format!("read failed: {e}"));
@@ -827,8 +838,13 @@ where
     };
 
     // Not a tar at all: the whole input is a single anonymous member.
-    if sniff(&head) != Format::Tar {
+    if !is_tar {
         out.members_seen = 1;
+        // Under a compression trg does read, as in `logs.cpio.gz`.
+        if let Some(why) = sniff(&head).unreadable() {
+            out.errors.push(why);
+            return out;
+        }
         let mut seen = SawEnd { inner: &mut body, ended: false };
         let searched = f("", &mut seen).and_then(|rest| {
             let ended = seen.ended;
@@ -850,46 +866,32 @@ where
         return out;
     }
 
-    let mut ar = tar::Archive::new(EndMark { inner: body, zeros: 0 });
-    // Read on past the end-of-archive blocks, as `tar -i` does. `cat
-    // day1.tgz day2.tgz > week.tgz` is one valid gzip holding two tars, and
-    // stopping at the first one's end left every member of the second
+    // The reader goes on past the end-of-archive blocks, as `tar -i` does.
+    // `cat day1.tgz day2.tgz > week.tgz` is one valid gzip holding two tars,
+    // and stopping at the first one's end left every member of the second
     // unsearched: a 1 about a day never read. Anything after the end that is
-    // not zeros or another tar is now an error, where it was read and thrown
-    // away.
-    ar.set_ignore_zeros(true);
-    let entries = match ar.entries() {
-        Ok(e) => e,
-        Err(e) => {
-            out.errors.push(format!("not a readable tar: {e}"));
-            return out;
-        }
-    };
-
-    let mut ended = true;
-    for entry in entries {
-        let mut entry = match entry {
-            Ok(e) => e,
+    // not zeros or another tar is an error.
+    //
+    // And so to the end of the input, which under a compression is past the
+    // stream's trailer: gzip's CRC-32 and length, bzip2's stream CRC, lz4's
+    // content checksum. Stopping at the tar's end never read them, and a
+    // corrupt archive could come back a 0 with shifted line numbers, or a 1.
+    let mut ar = crate::tarwalk::Tar::new(body);
+    loop {
+        let name = match ar.next_member() {
+            Ok(Some(name)) => name,
+            Ok(None) => break,
             Err(e) => {
                 // Truncated or corrupt: stop this archive, keep what we had.
-                out.errors.push(format!("tar entry: {e}"));
-                ended = false;
+                let e = e.to_string();
+                out.errors.push(if e == crate::tarwalk::NO_END {
+                    e
+                } else if ar.end_seen() {
+                    format!("after the tar's end: {e}")
+                } else {
+                    format!("tar entry: {e}")
+                });
                 break;
-            }
-        };
-
-        // `is_file()` is exactly `== Regular`, which excludes hardlinks,
-        // symlinks, dirs, devices, FIFOs, GNU sparse, @LongLink and pax
-        // headers in one check. Hardlinks in particular carry no content.
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
-
-        let name = match entry.path() {
-            Ok(p) => p.to_string_lossy().into_owned(),
-            Err(e) => {
-                out.errors.push(format!("bad member path: {e}"));
-                continue;
             }
         };
 
@@ -901,28 +903,53 @@ where
 
         // A plain member's rest needs no reading here: the tar reads past it
         // to the next header anyway, through the decoder and its checksum.
-        let res = decode_member(&name, &mut entry, &mut f);
+        let res = decode_member(&name, &mut ar.content(), &mut f);
         match res {
             Ok(_) => out.members_searched += 1,
             Err(e) => out.errors.push(format!("{name}: {e}")),
         }
     }
 
-    // The tar ends at its end-of-archive blocks, but the compressed stream
-    // around it goes on to its trailer: gzip's CRC-32 and length, bzip2's
-    // stream CRC, lz4's content checksum. Stopping at the tar's end never
-    // read them, and a corrupt archive could come back a 0 with shifted line
-    // numbers, or a 1. What is left is padding and the trailer.
-    if ended {
-        let mut rest = ar.into_inner();
-        if let Err(e) = io::copy(&mut rest, &mut io::sink()) {
-            out.errors.push(format!("after the tar's end: {e}"));
-        } else if rest.zeros < 512 {
-            out.errors.push("the tar ends without its end-of-archive blocks: cut short".into());
+    out
+}
+
+/// A reader with the bytes already read of it back in front.
+type Replay<R> = io::Chain<io::Cursor<Vec<u8>>, R>;
+
+/// How far into a stream of zeros to look for a tar's first header.
+const LEADING_ZEROS_MAX: usize = 1 << 20;
+
+/// Whether the stream `head` starts is a tar, with the stream back.
+///
+/// A tar may start with zero blocks: `tar -i` reads past them, and a tar
+/// appended to a preallocated or blanked region has them. One block of zeros
+/// sniffs as nothing, and the tar after it was searched as a plain file, its
+/// compressed members never opened. So zeros are read through, a megabyte at
+/// most, to the first block that is not: a tar's header, or else this is
+/// some other file that starts with zeros, and is read as before.
+fn tar_after_zeros<R: Read>(head: &[u8], body: Replay<R>) -> io::Result<(bool, Replay<R>)> {
+    if head.len() < SNIFF_LEN || head.iter().any(|&b| b != 0) {
+        return Ok((sniff(head) == Format::Tar, body));
+    }
+    let (replay, mut rdr) = body.into_inner();
+    let mut seen = replay.into_inner();
+    loop {
+        let at = seen.len();
+        seen.resize(at + SNIFF_LEN, 0);
+        let mut n = 0;
+        while n < SNIFF_LEN {
+            match rdr.read(&mut seen[at + n..])? {
+                0 => break,
+                k => n += k,
+            }
+        }
+        seen.truncate(at + n);
+        let block = &seen[at..];
+        if n < SNIFF_LEN || block.iter().any(|&b| b != 0) || seen.len() >= LEADING_ZEROS_MAX {
+            let is_tar = crate::sniff::is_tar_header(block);
+            return Ok((is_tar, io::Cursor::new(seen).chain(rdr)));
         }
     }
-
-    out
 }
 
 /// Whether a read has returned the end of the input.
@@ -937,28 +964,6 @@ impl Read for SawEnd<'_> {
         if n == 0 && !buf.is_empty() {
             self.ended = true;
         }
-        Ok(n)
-    }
-}
-
-/// Counts the zero bytes the stream ends in. The tar reader takes the end of
-/// its input at a header boundary for the end of the archive, so a plain tar
-/// cut between two members read as a whole, shorter one, and a search of it
-/// was a 1 about members never read. Every tar writer ends the archive with
-/// zero blocks; a stream that does not end in at least one was cut.
-struct EndMark<R> {
-    inner: R,
-    zeros: u64,
-}
-
-impl<R: Read> Read for EndMark<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        let b = &buf[..n];
-        self.zeros = match b.iter().rposition(|&x| x != 0) {
-            Some(i) => (n - 1 - i) as u64,
-            None => self.zeros + n as u64,
-        };
         Ok(n)
     }
 }

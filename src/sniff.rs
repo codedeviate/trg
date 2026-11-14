@@ -1,6 +1,6 @@
 //! Content-based format detection. There is no `-z` flag by design.
 
-/// One tar block: enough to reach the `ustar` magic at offset 257.
+/// One tar block: a whole header, checksum and all.
 pub const SNIFF_LEN: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,7 +14,21 @@ pub enum Format {
     CompressZ,
     Zip,
     Tar,
+    /// A format trg has no reader for, named with its article ("an lzip").
+    /// Searched as the bytes it is, a compressed file is a 1 about content
+    /// nothing read; so it is an error instead.
+    Unreadable(&'static str),
     Plain,
+}
+
+impl Format {
+    /// Why a file of a format trg cannot read was not searched.
+    pub fn unreadable(self) -> Option<String> {
+        match self {
+            Format::Unreadable(kind) => Some(format!("{kind} file, which trg cannot read: not searched")),
+            _ => None,
+        }
+    }
 }
 
 const LZ4_FRAME: [u8; 4] = [0x04, 0x22, 0x4D, 0x18];
@@ -50,9 +64,112 @@ fn after_skippable(head: &[u8]) -> Format {
     }
 }
 
+/// A tar number field: octal digits, after spaces and before a NUL or a
+/// space. `None` if it holds no digit, or anything else.
+pub(crate) fn octal(field: &[u8]) -> Option<u64> {
+    let start = field.iter().position(|&b| b != b' ')?;
+    let field = &field[start..];
+    let digits = field.iter().position(|b| !(b'0'..=b'7').contains(b)).unwrap_or(field.len());
+    if digits == 0 || digits > 21 || field[digits..].iter().any(|&b| b != 0 && b != b' ') {
+        return None;
+    }
+    Some(field[..digits].iter().fold(0u64, |v, &b| (v << 3) | (b - b'0') as u64))
+}
+
+/// Whether `block` starts with a tar header: 512 bytes whose checksum field
+/// holds the sum of the rest, taken as unsigned bytes or, as some old tars
+/// wrote it, signed ones.
+///
+/// The checksum, and not the `ustar` magic at offset 257. A v7 tar has no
+/// magic, and was searched as a plain file with its compressed members
+/// unopened; and a log can have the magic, whoever sends its first request
+/// line choosing the bytes, and was then read as a broken tar and not
+/// searched.
+pub fn is_tar_header(block: &[u8]) -> bool {
+    let Some(block) = block.get(..512) else { return false };
+    let Some(stored) = octal(&block[148..156]) else { return false };
+    let (mut unsigned, mut signed) = (0u64, 0i64);
+    for (i, &b) in block.iter().enumerate() {
+        let b = if (148..156).contains(&i) { b' ' } else { b };
+        unsigned += b as u64;
+        signed += b as i8 as i64;
+    }
+    stored == unsigned || i64::try_from(stored) == Ok(signed)
+}
+
+fn all(bytes: Option<&[u8]>, f: fn(&u8) -> bool) -> bool {
+    bytes.is_some_and(|b| b.iter().all(f))
+}
+
+/// A binary cpio header: thirteen 16-bit fields in either byte order, then
+/// the name. The two bytes of its magic are too few to go on (`q` and a
+/// Latin-1 letter), so the file type and the name must make sense as well.
+fn is_binary_cpio(head: &[u8]) -> bool {
+    let field: fn([u8; 2]) -> u16 = match head {
+        [0xC7, 0x71, ..] => u16::from_le_bytes,
+        [0x71, 0xC7, ..] => u16::from_be_bytes,
+        _ => return false,
+    };
+    let at = |i: usize| head.get(i..i + 2).map(|b| field([b[0], b[1]]));
+    let (Some(mode), Some(namesize)) = (at(6), at(20)) else { return false };
+    let namesize = namesize as usize;
+    let Some(name) = head.get(26..26 + namesize) else { return false };
+    matches!(mode >> 12, 0o01 | 0o02 | 0o04 | 0o06 | 0o10 | 0o12 | 0o14)
+        && name.last() == Some(&0)
+        && !name[..namesize - 1].contains(&0)
+}
+
+/// An lzma-alone file (`xz --format=lzma`, `.lzma`), which has no magic:
+/// the properties byte every encoder writes, a dictionary size that is 2^n
+/// or 2^n + 2^(n-1), a length that is unknown or plausible, and the zero
+/// byte every range-coded stream starts with.
+fn is_lzma_alone(head: &[u8]) -> bool {
+    let Some(h) = head.get(..14) else { return false };
+    let dict = u32::from_le_bytes(h[1..5].try_into().unwrap());
+    let size = u64::from_le_bytes(h[5..13].try_into().unwrap());
+    let top = 1u32 << (31 - dict.leading_zeros().min(31));
+    h[0] == 0x5D
+        && dict >= 1 << 16
+        && (dict == top || dict == (top | (top >> 1)))
+        && (size == u64::MAX || size < 1 << 40)
+        && h[13] == 0
+}
+
+/// The formats trg knows by sight and cannot read.
+fn unreadable(head: &[u8]) -> Option<&'static str> {
+    // "LZIP" and a version, of which there are two.
+    if head.starts_with(b"LZIP") && matches!(head.get(4), Some(0 | 1)) {
+        return Some("an lzip");
+    }
+    if head.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        return Some("a 7z");
+    }
+    if head.starts_with(b"Rar!\x1a\x07") {
+        return Some("a rar");
+    }
+    if head.starts_with(b"\x89LZO\x00\r\n\x1a\n") {
+        return Some("an lzop");
+    }
+    // The text cpio headers are all digits, 76 octal ones or 110 hex, and a
+    // log line can start with the six of the magic.
+    if head.starts_with(b"070707") && all(head.get(..76), |b| (b'0'..=b'7').contains(b)) {
+        return Some("a cpio");
+    }
+    if (head.starts_with(b"070701") || head.starts_with(b"070702")) && all(head.get(..110), u8::is_ascii_hexdigit) {
+        return Some("a cpio");
+    }
+    if is_binary_cpio(head) {
+        return Some("a cpio");
+    }
+    if is_lzma_alone(head) {
+        return Some("an lzma");
+    }
+    None
+}
+
 /// Classify a buffer by its leading bytes. Order matters: the compressed
 /// formats are checked first, because a compressed stream can contain any byte
-/// sequence at all — including a convincing `ustar` at offset 257.
+/// sequence at all.
 pub fn sniff(head: &[u8]) -> Format {
     if head.len() >= 2 && head[0] == 0x1f && head[1] == 0x8b {
         return Format::Gzip;
@@ -99,10 +216,13 @@ pub fn sniff(head: &[u8]) -> Format {
     {
         return Format::Bzip2;
     }
-    if head.len() >= 262 && &head[257..262] == b"ustar" {
+    if is_tar_header(head) {
         return Format::Tar;
     }
-    Format::Plain
+    match unreadable(head) {
+        Some(kind) => Format::Unreadable(kind),
+        None => Format::Plain,
+    }
 }
 
 #[cfg(test)]
@@ -114,18 +234,94 @@ mod tests {
         assert_eq!(sniff(&[0x1f, 0x8b, 0x08, 0x00]), Format::Gzip);
     }
 
-    #[test]
-    fn detects_ustar_tar_at_offset_257() {
+    /// A header block with a name, `magic` at 257 and a checksum that holds.
+    fn tar_header(magic: &[u8]) -> Vec<u8> {
         let mut b = vec![0u8; 512];
-        b[257..262].copy_from_slice(b"ustar");
-        assert_eq!(sniff(&b), Format::Tar);
+        b[..5].copy_from_slice(b"a.log");
+        b[257..257 + magic.len()].copy_from_slice(magic);
+        b[148..156].fill(b' ');
+        let sum: u32 = b.iter().map(|&x| x as u32).sum();
+        b[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        b
     }
 
     #[test]
-    fn detects_gnu_tar_variant() {
-        let mut b = vec![0u8; 512];
-        b[257..265].copy_from_slice(b"ustar  \0");
+    fn detects_a_tar_of_any_dialect_by_its_header_checksum() {
+        assert_eq!(sniff(&tar_header(b"ustar\x0000")), Format::Tar, "ustar");
+        assert_eq!(sniff(&tar_header(b"ustar  \0")), Format::Tar, "GNU");
+        assert_eq!(sniff(&tar_header(b"")), Format::Tar, "v7, which has no magic");
+    }
+
+    /// Some old tars summed the header as signed bytes, which differs once
+    /// a name has a byte over 0x7F.
+    #[test]
+    fn a_signed_header_checksum_is_a_tar_too() {
+        let mut b = tar_header(b"");
+        b[0] = 0xE5;
+        assert_eq!(sniff(&b), Format::Plain, "the checksum no longer holds");
+        b[148..156].fill(b' ');
+        let sum: i32 = b.iter().map(|&x| x as i8 as i32).sum();
+        b[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
         assert_eq!(sniff(&b), Format::Tar);
+    }
+
+    /// The magic alone is five bytes anyone can put in a log.
+    #[test]
+    fn the_ustar_magic_without_a_checksum_is_not_a_tar() {
+        let mut b = vec![0u8; 512];
+        b[257..262].copy_from_slice(b"ustar");
+        assert_eq!(sniff(&b), Format::Plain);
+        let mut b = vec![b'a'; 512];
+        b[257..262].copy_from_slice(b"ustar");
+        assert_eq!(sniff(&b), Format::Plain);
+        assert_eq!(sniff(&[0u8; 512]), Format::Plain, "a block of zeros has no checksum");
+        assert_eq!(sniff(&tar_header(b"ustar")[..511]), Format::Plain, "short of a block");
+    }
+
+    #[test]
+    fn formats_without_a_reader_are_named() {
+        let kind = |b: &[u8]| sniff(b).unreadable();
+        let says = |k: &str| Some(format!("{k} file, which trg cannot read: not searched"));
+        assert_eq!(kind(b"LZIP\x01\x0c"), says("an lzip"));
+        assert_eq!(kind(b"7z\xBC\xAF\x27\x1C\x00\x04"), says("a 7z"));
+        assert_eq!(kind(b"Rar!\x1a\x07\x00"), says("a rar"));
+        assert_eq!(kind(b"\x89LZO\x00\r\n\x1a\n\x10"), says("an lzop"));
+        assert_eq!(kind(&b"070707".repeat(13)), says("a cpio"));
+        assert_eq!(kind(&b"070701".repeat(19)), says("a cpio"));
+        assert_eq!(kind(&b"070702".repeat(19)), says("a cpio"));
+        // xz --format=lzma: 8 MiB dictionary, unknown length.
+        let mut lzma = vec![0x5D, 0, 0, 0x80, 0];
+        lzma.extend([0xFF; 8]);
+        lzma.extend([0, 0x26, 0x1B]);
+        assert_eq!(kind(&lzma), says("an lzma"));
+        lzma[13] = 1;
+        assert_eq!(kind(&lzma), None, "a range coder starts with a zero");
+        lzma[13] = 0;
+        lzma[3] = 0x81;
+        assert_eq!(kind(&lzma), None, "not a dictionary size");
+        assert_eq!(kind(b"plain"), None);
+    }
+
+    #[test]
+    fn text_that_starts_with_a_printable_magic_is_text() {
+        assert_eq!(sniff(b"LZIP is a word\n"), Format::Plain);
+        assert_eq!(sniff(b"070707 12:00 GET /\n"), Format::Plain);
+        assert_eq!(sniff(&b"070701 ".repeat(30)), Format::Plain);
+        assert_eq!(sniff(b"7z, Rar! and friends\n"), Format::Plain);
+        assert_eq!(sniff(b"q\xc7 in Latin-1, and a long enough line after it\n"), Format::Plain);
+        assert_eq!(sniff(b"]\0\0\x80\0 but not a stream"), Format::Plain);
+    }
+
+    #[test]
+    fn a_binary_cpio_is_known_in_both_byte_orders() {
+        let fields: [u16; 13] = [0o070707, 1, 2, 0o100644, 0, 0, 1, 0, 0, 0, 6, 0, 7];
+        for order in [u16::to_le_bytes, u16::to_be_bytes] {
+            let mut b: Vec<u8> = fields.iter().flat_map(|&f| order(f)).collect();
+            b.extend_from_slice(b"a.log\0data");
+            assert_eq!(sniff(&b), Format::Unreadable("a cpio"));
+            b[30] = 0;
+            assert_eq!(sniff(&b), Format::Plain, "a NUL inside the name");
+        }
     }
 
     #[test]

@@ -44,7 +44,6 @@ num_cpus = "1.17.0"
 serde_json = "1.0.151"
 stuffr-core = "0.23.0"
 stuffr-formats = { version = "0.23.0", default-features = false, features = ["zip", "compress"] }
-tar = "0.4.46"
 termcolor = "1.4.1"
 zstd = "0.14.3"
 

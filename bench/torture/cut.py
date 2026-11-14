@@ -26,8 +26,9 @@ bad = {}
 for name in fixtures():
     data = open(os.path.join(FX, name), "rb").read()
     n = len(data)
-    # A plain tar is known by "ustar" at offset 257; the rest by a few bytes.
-    short = 262 if name.endswith(".tar") else 10
+    # A plain tar is known by its first header, a whole block with a checksum
+    # that holds; the rest by a few bytes.
+    short = 512 if name.endswith(".tar") else 10
     unchecked = name.endswith(".tar") or name.endswith(".Z")
     edges = [1, 2, 3, 10, 100, 511, 512, 513, 1023, 1024, n - 1024, n - 512, n - 8, n - 2, n - 1]
     offs = sorted({o for o in edges + random.sample(range(1, n), min(N, n - 1)) if 0 < o < n})

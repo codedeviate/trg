@@ -9,4 +9,5 @@ pub mod sched;
 pub mod search;
 pub mod sniff;
 pub mod source;
+mod tarwalk;
 mod zip_check;
