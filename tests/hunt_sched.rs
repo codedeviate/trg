@@ -483,6 +483,73 @@ fn the_json_summary_counts_every_archive_when_they_stream() {
     assert!(summary.contains(&format!("\"matched_lines\":{matches}")), "{matches} matches, but: {summary}");
 }
 
+// ---- 3. the load gate -------------------------------------------------------
+
+/// The gate took its own height off the load, as if every place at it were a
+/// running worker. `--turbo` on 64 cores over seven archives has a gate of
+/// 64, so the others' load was `load - 64` and no load could close it.
+#[test]
+fn the_gate_closes_on_load_that_is_not_ours() {
+    use trg::resource::next_gate;
+    // Seven workers busy, a load of 30: 23 of it is someone else's.
+    assert_eq!(next_gate(64, 64, 30.0, 4.0, 7.0), 1);
+    // Workers waiting their turn to write are no load: all of it is theirs.
+    assert_eq!(next_gate(8, 8, 9.0, 4.0, 0.0), 1);
+    // And the case it must not break: eight of ours and little else.
+    assert_eq!(next_gate(8, 8, 9.0, 4.0, 8.0), 8);
+    // Sampled at different moments, ours can exceed the load: that is zero
+    // of theirs, not a negative amount.
+    assert_eq!(next_gate(3, 8, 2.0, 0.0, 5.0), 4);
+}
+
+/// trg's share is averaged as the kernel averages the load: towards the
+/// number of busy workers, over about a minute.
+#[test]
+fn our_share_of_the_load_follows_the_busy_workers_as_the_load_does() {
+    use trg::resource::own_load;
+    let step = Duration::from_secs(5);
+    let mut ours = 0.0;
+    ours = own_load(ours, 8, step);
+    assert!(ours > 0.5 && ours < 0.8, "one sample of eight busy workers: {ours}");
+    for _ in 0..60 {
+        ours = own_load(ours, 8, step);
+    }
+    assert!((ours - 8.0).abs() < 0.1, "five minutes of eight busy workers: {ours}");
+    for _ in 0..60 {
+        ours = own_load(ours, 0, step);
+    }
+    assert!(ours < 0.1, "five minutes of none: {ours}");
+}
+
+/// The gate reports how many workers are at work, which is what the load
+/// thread reads: none before, none after, and no more than the jobs there
+/// are, however wide `-j` is.
+#[test]
+fn the_gate_counts_the_workers_that_are_busy() {
+    let peak = within(30, || {
+        let gate = trg::sched::Gate::new(64);
+        let peak = std::sync::atomic::AtomicUsize::new(0);
+        assert_eq!(gate.busy(), 0);
+        trg::sched::run_gated(
+            jobs(3),
+            Config { workers: 64, sorted: true, spill_bytes: 64 << 20 },
+            &gate,
+            termcolor::Buffer::no_color,
+            || (),
+            |_job, _c: &mut (), _out| {
+                std::thread::sleep(Duration::from_millis(100));
+                peak.fetch_max(gate.busy(), std::sync::atomic::Ordering::SeqCst);
+                trg::archive::Outcome::default()
+            },
+            |_d: &Done| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(gate.busy(), 0);
+        peak.into_inner()
+    });
+    assert_eq!(peak, 3, "three archives are three busy workers at -j64");
+}
+
 // ---- 6. a low descriptor limit ----------------------------------------------
 
 /// `-j` far above what `ulimit -n` lets be open at once: the workers that

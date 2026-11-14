@@ -193,18 +193,41 @@ pub fn starting_gate(jobs: usize, limit: f64, load: f64) -> usize {
     if load > limit { 1 } else { jobs.max(1) }
 }
 
+/// trg's own share of the one-minute load average, after one more sample of
+/// how many of its workers are busy.
+///
+/// The kernel's figure is an exponentially damped average of the tasks
+/// running or waiting on the disk, sampled every five seconds, and this is
+/// the same average of the same count for trg's workers alone: a busy
+/// worker is one inside an archive and not parked by the scheduler, so it is
+/// inflating or blocked reading. Damped alike, the two move together, and
+/// their difference is everyone else's load.
+pub fn own_load(prev: f64, busy: usize, interval: std::time::Duration) -> f64 {
+    let keep = (-interval.as_secs_f64() / 60.0).exp();
+    prev * keep + busy as f64 * (1.0 - keep)
+}
+
 /// The gate after one more look at the load.
 ///
-/// The load average counts trg's own workers too, so up to `gate` of it is
-/// ours and comes off before the comparison. Without that, `-j8 --load-limit
-/// 4` closes the gate on itself on an idle box. Over the limit, it drops
-/// straight to one job: the point of the flag is to get out of Apache's way,
-/// and by the time a 1-minute average shows a spike, the spike has been going
-/// for a while. Under it, it opens one worker per check, because the average
-/// lags in the other direction too, and snapping wide open after a spike
-/// walks straight back into it.
-pub fn next_gate(gate: usize, jobs: usize, load: f64, limit: f64) -> usize {
-    let others = load - gate as f64;
+/// The load average counts trg's own workers too, so `ours` of it comes off
+/// before the comparison. Without that, `-j8 --load-limit 4` closes the gate
+/// on itself on an idle box.
+///
+/// `ours` is what trg is measured to contribute ([`own_load`]), not the
+/// gate. The gate is a ceiling: `--turbo` on 64 cores over seven archives has
+/// a gate of 64 and seven workers, and workers waiting their turn to write
+/// are no load at all. Taking the whole gate off left `load - 64`, which no
+/// amount of Apache pushes past a limit, so the gate never closed.
+///
+/// Over the limit, it drops straight to one job: the point of the flag is to
+/// get out of Apache's way, and by the time a 1-minute average shows a spike,
+/// the spike has been going for a while. Under it, it opens one worker per
+/// check, because the average lags in the other direction too, and snapping
+/// wide open after a spike walks straight back into it.
+pub fn next_gate(gate: usize, jobs: usize, load: f64, limit: f64, ours: f64) -> usize {
+    // Never more than the load itself: the two are sampled at different
+    // moments, and a negative remainder would only be noise.
+    let others = (load - ours).max(0.0);
     if others > limit { 1 } else { (gate + 1).min(jobs).max(1) }
 }
 
@@ -226,12 +249,15 @@ pub fn load_gate(jobs: usize, limit: Option<f64>) -> Option<std::sync::Arc<crate
     let _ = std::thread::Builder::new()
         .name("trg-load".into())
         .spawn(move || {
+            // Nothing of the load is ours before the first worker starts.
+            let mut ours = 0.0;
             loop {
                 std::thread::sleep(LOAD_CHECK);
                 let Some(gate) = held.upgrade() else { return };
+                ours = own_load(ours, gate.busy(), LOAD_CHECK);
                 if let Some(load) = load_average_1m() {
                     let now = gate.open.load(Ordering::Relaxed);
-                    gate.open.store(next_gate(now, jobs, load, limit), Ordering::Relaxed);
+                    gate.open.store(next_gate(now, jobs, load, limit, ours), Ordering::Relaxed);
                 }
             }
         });
