@@ -155,6 +155,7 @@ fn run() -> anyhow::Result<RunStatus> {
         aliases: &aliases,
         sink_limit: search::sink_limit(&args.search).map(|n| (n, args.search.after)),
         separate: search::separates_members(&args.search, args.print.mode),
+        search_nothing: args.search.max_count == Some(0),
         // JSON has its own escape for a newline, and gets the name as it is.
         one_line_names: one_line_names && args.print.mode != print::Mode::Json,
     };

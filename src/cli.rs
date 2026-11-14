@@ -108,6 +108,8 @@ NOTES (documented, and surprising the first time):
     Every checksum is read, including the gzip, bzip2 or lz4 trailer after a
       tar's end, so a corrupt archive is a 2. A file a few bytes long, shorter than its format's
       signature, reads as plain bytes; a plain .tar has no checksum on data.
+      -q, -l and -m stop searching at their match, and still read anything
+      compressed to its end: a cut-off .gz is a 2 under -q as without it.
     With -j above 1, results wait so they come out in order. Once more than
       64 MB is waiting, trg writes it out of order, with a note on stderr.
       Memory can still peak well above 64 MB: archives being searched are not

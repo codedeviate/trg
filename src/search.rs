@@ -321,6 +321,8 @@ pub struct SearchCtx<'a> {
     /// `--` between members, as rg puts it between files: the default output
     /// with context on. See [`separates_members`].
     pub separate: bool,
+    /// `-m 0`: search nothing, as rg does. See [`search_archive`].
+    pub search_nothing: bool,
     /// Show a newline in a name as `\x0a`: see [`crate::escape::name`]. Off
     /// for `--escape never`, and for `--json`, which has its own escapes.
     pub one_line_names: bool,
@@ -504,6 +506,14 @@ pub fn search_archive(
         };
         let display = ctx.shown(display_path(shown, member, sep));
         kept = true;
+        // `-m 0` asks for no match at all, and rg answers it by searching
+        // nothing: no line, no count, a 1. The searcher cannot be asked: with
+        // `-v` it reports one match before it looks at a limit of 0, and
+        // with `-A` as well, every line. The member is still read to its
+        // end below, so a cut archive is a 2 as under any other flag.
+        if ctx.search_nothing {
+            return Ok(crate::archive::Rest::Verify);
+        }
         let separate = ctx.separate && printed;
         let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
         matched |= v.matched;
@@ -523,9 +533,14 @@ pub fn search_archive(
             )),
             None => {}
         }
-        // A member that matched is a 0 either way, so `-q`, `-l` and `-m`
-        // keep stopping early; one that did not must be read to its end.
-        Ok(if v.matched { crate::archive::Rest::Leave } else { crate::archive::Rest::Verify })
+        // Read to its end whatever the search found. `-q`, `-l`, `-m` and a
+        // match after binary data all stop the *search* early, and stopping
+        // the read there too made a cut or corrupt `.gz` a 0 under `-q` and
+        // a 2 without it, and a 2 in a `.tgz` under either: "anything unread
+        // is a 2, even when matches were found" has no exception for the
+        // flag or the container. Only data with a checksum is read on (see
+        // `Rest::Verify`), so `-q` on a plain file still stops at its match.
+        Ok(crate::archive::Rest::Verify)
     });
     // A note, not an error: nothing is known to be missing, and the format
     // offers no way to find out. But a 1 is someone's "the logs are clean",
