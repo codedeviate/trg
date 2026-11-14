@@ -5,9 +5,8 @@
 use grep_printer::{
     ColorSpecs, Standard, StandardBuilder, Summary, SummaryBuilder, SummaryKind, JSON, JSONBuilder,
 };
-use termcolor::Buffer;
-
 use crate::escape::Escaped;
+use crate::sched::Output;
 
 /// The mutually exclusive output modes.
 ///
@@ -57,13 +56,16 @@ impl Default for PrintOpts {
 /// An enum rather than a trait object because the three printers' sinks are
 /// unrelated concrete types with different lifetimes, and boxing them would
 /// buy nothing: the match arms live in exactly one place, `search::search_member`.
-pub enum Printer<'a> {
-    Standard(Standard<Escaped<&'a mut Buffer>>),
-    Summary(Summary<Escaped<&'a mut Buffer>>),
-    Json(JSON<Escaped<&'a mut Buffer>>),
+///
+/// It writes into the job's [`Output`], which hands what it is given on to
+/// stdout in segments: nothing here holds an archive's whole match volume.
+pub enum Printer<'a, 'o> {
+    Standard(Standard<Escaped<&'a mut Output<'o>>>),
+    Summary(Summary<Escaped<&'a mut Output<'o>>>),
+    Json(JSON<Escaped<&'a mut Output<'o>>>),
 }
 
-pub fn build<'a>(o: &PrintOpts, buf: &'a mut Buffer) -> Printer<'a> {
+pub fn build<'a, 'o>(o: &PrintOpts, buf: &'a mut Output<'o>) -> Printer<'a, 'o> {
     // On a `Buffer` built for a `ColorChoice::Never` writer these specs are
     // inert, so passing them unconditionally would still be correct; gating
     // keeps the "did the operator ask for colour" decision visible in one

@@ -50,7 +50,7 @@ impl InFlight {
 #[test]
 fn a_gate_of_one_runs_one_job_at_a_time_and_loses_nothing() {
     let (peak, seen) = within(30, || {
-        let gate = AtomicUsize::new(1);
+        let gate = trg::sched::Gate::new(1);
         let fl = InFlight::default();
         let seen = Mutex::new(Vec::new());
         trg::sched::run_gated(
@@ -82,7 +82,7 @@ fn a_gate_of_one_runs_one_job_at_a_time_and_loses_nothing() {
 #[test]
 fn raising_the_gate_mid_run_lets_more_workers_in() {
     let peak = within(30, || {
-        let gate = Arc::new(AtomicUsize::new(1));
+        let gate = Arc::new(trg::sched::Gate::new(1));
         let fl = InFlight::default();
         let done = AtomicUsize::new(0);
         let g = Arc::clone(&gate);
@@ -95,7 +95,7 @@ fn raising_the_gate_mid_run_lets_more_workers_in() {
             |_job, _c: &mut (), _b| {
                 fl.enter();
                 if done.fetch_add(1, Ordering::SeqCst) == 4 {
-                    g.store(4, Ordering::SeqCst);
+                    g.open.store(4, Ordering::SeqCst);
                 }
                 std::thread::sleep(Duration::from_millis(20));
                 fl.leave();
@@ -115,7 +115,7 @@ fn raising_the_gate_mid_run_lets_more_workers_in() {
 fn lowering_the_gate_mid_run_holds_workers_back() {
     let late_peak = within(30, || {
         const FIRST_WAVE: usize = 4;
-        let gate = AtomicUsize::new(FIRST_WAVE);
+        let gate = trg::sched::Gate::new(FIRST_WAVE);
         // The first wave blocks until all four are in flight, so the gate is
         // lowered while every worker is inside a job and none can be caught
         // between its gate check and its claim.
@@ -133,7 +133,7 @@ fn lowering_the_gate_mid_run_holds_workers_back() {
                     let mut n = m.lock().unwrap();
                     *n += 1;
                     if *n == FIRST_WAVE {
-                        gate.store(1, Ordering::SeqCst);
+                        gate.open.store(1, Ordering::SeqCst);
                         cv.notify_all();
                     }
                     let (_n, timeout) = cv
@@ -161,7 +161,7 @@ fn lowering_the_gate_mid_run_holds_workers_back() {
 #[test]
 fn an_early_stop_does_not_wait_on_held_back_workers() {
     let r = within(10, || {
-        let gate = AtomicUsize::new(1);
+        let gate = trg::sched::Gate::new(1);
         trg::sched::run_gated(
             jobs(50),
             trg::sched::Config { workers: 8, sorted: true, spill_bytes: 64 << 20 },
@@ -181,7 +181,7 @@ fn an_early_stop_does_not_wait_on_held_back_workers() {
 #[test]
 fn a_dead_worker_does_not_hold_the_only_place_at_the_gate() {
     let seen = within(10, || {
-        let gate = AtomicUsize::new(1);
+        let gate = trg::sched::Gate::new(1);
         let built = AtomicUsize::new(0);
         let seen = Mutex::new(Vec::new());
         trg::sched::run_gated(
@@ -211,7 +211,7 @@ fn a_dead_worker_does_not_hold_the_only_place_at_the_gate() {
 #[test]
 fn a_gate_of_zero_still_makes_progress() {
     let n = within(10, || {
-        let gate = AtomicUsize::new(0);
+        let gate = trg::sched::Gate::new(0);
         let n = AtomicUsize::new(0);
         trg::sched::run_gated(
             jobs(6),

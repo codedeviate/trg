@@ -105,8 +105,8 @@ fn the_starting_gate_follows_the_load_at_startup() {
 fn the_gate_drops_to_one_when_other_load_exceeds_the_limit() {
     use trg::resource::next_gate;
     // 8 of ours + 12 of theirs, limit 4.
-    assert_eq!(next_gate(8, 8, 20.0, 4.0), 1);
-    assert_eq!(next_gate(3, 8, 20.0, 4.0), 1);
+    assert_eq!(next_gate(8, 8, 20.0, 4.0, 8.0), 1);
+    assert_eq!(next_gate(3, 8, 20.0, 4.0, 3.0), 1);
 }
 
 /// The defect that kept the old check a one-off: trg's own workers are in the
@@ -115,7 +115,7 @@ fn the_gate_drops_to_one_when_other_load_exceeds_the_limit() {
 #[test]
 fn our_own_workers_are_not_counted_as_load() {
     use trg::resource::next_gate;
-    assert_eq!(next_gate(8, 8, 11.0, 4.0), 8, "8 ours + 3 theirs is under a limit of 4");
+    assert_eq!(next_gate(8, 8, 11.0, 4.0, 8.0), 8, "8 ours + 3 theirs is under a limit of 4");
 }
 
 /// Back up one worker per check, not all at once: the load average lags, and
@@ -123,16 +123,16 @@ fn our_own_workers_are_not_counted_as_load() {
 #[test]
 fn the_gate_reopens_one_worker_at_a_time() {
     use trg::resource::next_gate;
-    assert_eq!(next_gate(1, 8, 1.5, 4.0), 2);
-    assert_eq!(next_gate(2, 8, 2.5, 4.0), 3);
-    assert_eq!(next_gate(8, 8, 8.0, 4.0), 8, "never past -j");
+    assert_eq!(next_gate(1, 8, 1.5, 4.0, 1.0), 2);
+    assert_eq!(next_gate(2, 8, 2.5, 4.0, 2.0), 3);
+    assert_eq!(next_gate(8, 8, 8.0, 4.0, 8.0), 8, "never past -j");
 }
 
 #[test]
 fn the_gate_never_closes_below_one() {
     use trg::resource::{next_gate, starting_gate};
-    assert_eq!(next_gate(1, 1, 99.0, 0.0), 1);
-    assert_eq!(next_gate(0, 4, 0.0, 4.0), 1);
+    assert_eq!(next_gate(1, 1, 99.0, 0.0, 1.0), 1);
+    assert_eq!(next_gate(0, 4, 0.0, 4.0, 0.0), 1);
     assert_eq!(starting_gate(0, 0.0, 99.0), 1);
 }
 

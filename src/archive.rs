@@ -48,6 +48,76 @@ pub struct Outcome {
     /// With `--json`, the printer's statistics summed over the members, for
     /// the closing summary record.
     pub stats: Option<grep_printer::Stats>,
+    /// Errors past [`MAX_DIAGNOSTICS`], counted and not kept.
+    pub more_errors: usize,
+}
+
+/// How many errors, and how many notes, one archive may report line by line.
+///
+/// An archive in which every member fails is cheap to make and can hold
+/// millions of them; kept whole, its errors were 1.9 GB of memory for a
+/// 4 MB file. The first hundred say what is wrong with it, the rest are
+/// counted, and one error is as much a 2 as a million.
+pub const MAX_DIAGNOSTICS: usize = 100;
+
+/// The longest member name a diagnostic shows, in bytes. A pax header can
+/// name a member with megabytes of text, and a diagnostic is one line.
+const MAX_NAME: usize = 1024;
+
+impl Outcome {
+    /// Record an error, up to the cap.
+    pub fn error(&mut self, msg: String) {
+        push_capped(&mut self.errors, &mut self.more_errors, msg);
+    }
+}
+
+/// Push onto a list of diagnostics that keeps [`MAX_DIAGNOSTICS`] and counts
+/// the rest in `more`.
+pub fn push_capped(list: &mut Vec<String>, more: &mut usize, msg: String) {
+    if list.len() < MAX_DIAGNOSTICS {
+        list.push(msg);
+    } else {
+        *more += 1;
+    }
+}
+
+/// The line that stands for the diagnostics [`push_capped`] did not keep.
+pub fn and_more(archive: &Path, more: usize, what: &str) -> String {
+    format!("{}: and {more} more {what} in this archive, not shown", crate::source::display(archive))
+}
+
+/// A member's name as a diagnostic shows it: whole, or its first
+/// [`MAX_NAME`] bytes and an ellipsis.
+pub fn brief(name: &str) -> std::borrow::Cow<'_, str> {
+    if name.len() <= MAX_NAME {
+        return name.into();
+    }
+    let mut cut = MAX_NAME;
+    while !name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &name[..cut]).into()
+}
+
+/// A reader that fails once the run has been stopped.
+///
+/// Everything a walk reads comes through one of these, so a job whose output
+/// nobody is reading any more — `| head -1` has its line — stops within one
+/// read, wherever it is: in a search, skipping to the next tar header, or
+/// reading a member to its checksum. Without it the walk went on to the end
+/// of the archive, seconds after `head` had gone.
+struct Stoppable<'a, R> {
+    inner: R,
+    ctl: &'a crate::sched::Control,
+}
+
+impl<R: Read> Read for Stoppable<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.ctl.stopped() {
+            return Err(io::Error::other("the run has stopped"));
+        }
+        self.inner.read(buf)
+    }
 }
 
 /// Drops an archive's page-cache footprint when the reader that owns it dies.
@@ -437,15 +507,35 @@ pub fn walk_archive<F>(
 where
     F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
-    let mut out = match open_input(path, drop_cache) {
+    walk_archive_in(path, drop_cache, globs, &crate::sched::Control::detached(), f)
+}
+
+/// [`walk_archive`] as one job of a run: the walk ends early once `ctl` says
+/// the run has stopped, and an archive that cannot be opened for want of a
+/// file descriptor waits for one while other jobs are at work.
+///
+/// A walk the run stopped records no error for it. Whatever it reports was
+/// found before the stop, and is true; that it did not read to the end is
+/// the caller's to know, from having stopped it.
+pub fn walk_archive_in<F>(
+    path: &Path,
+    drop_cache: bool,
+    globs: Option<&crate::source::Globs>,
+    ctl: &crate::sched::Control,
+    f: F,
+) -> Outcome
+where
+    F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
+{
+    let mut out = match ctl.retry_for_fds(|| open_input(path, drop_cache)) {
         Ok(Opened::Stream(r, unverified_end, compressed, shrink)) => {
             // Read after the walk: only the end of an lz4 stream says
             // whether it ended in a legacy frame.
-            let out = walk_stream(r, globs, compressed, shrink, f);
+            let out = walk_stream(Stoppable { inner: r, ctl }, globs, compressed, shrink, ctl, f);
             Outcome { unverified_end: unverified_end.get(), ..out }
         }
         // The guard outlives the walk, so the pages go once it is over.
-        Ok(Opened::Zip(file, _guard)) => for_each_zip_member(file, globs, f),
+        Ok(Opened::Zip(file, _guard)) => for_each_zip_member(file, globs, ctl, f),
         Err(e) => {
             let mut o = Outcome::default();
             o.errors.push(e.to_string());
@@ -457,6 +547,9 @@ where
     // one to look at.
     for e in &mut out.errors {
         *e = format!("{}: {e}", crate::source::display(path));
+    }
+    if out.more_errors > 0 {
+        out.errors.push(and_more(path, out.more_errors, "errors"));
     }
     out
 }
@@ -491,7 +584,12 @@ fn zip_entry_error(e: &stuffr_core::Error) -> String {
 /// Anything stuffr reports about the archive itself — records it could not
 /// account for, such as two sharing one name — lands in `errors`, not
 /// `notes`: those are members that were not searched.
-fn for_each_zip_member<F>(file: File, globs: Option<&crate::source::Globs>, mut f: F) -> Outcome
+fn for_each_zip_member<F>(
+    file: File,
+    globs: Option<&crate::source::Globs>,
+    ctl: &crate::sched::Control,
+    mut f: F,
+) -> Outcome
 where
     F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
@@ -509,7 +607,7 @@ where
     let mut archive = match opened {
         Ok(a) => a,
         Err(e) => {
-            out.errors.push(format!("not a readable zip: {e}"));
+            out.error(format!("not a readable zip: {e}"));
             return out;
         }
     };
@@ -524,15 +622,18 @@ where
     let mut failed_in_a_row = 0;
     let mut index = 0usize;
     loop {
+        if ctl.stopped() {
+            return out;
+        }
         index += 1;
         let mut entry = match archive.next_entry() {
             Ok(Some(e)) => e,
             Ok(None) => break,
             Err(e) => {
-                out.errors.push(format!("zip entry {index}: {}", zip_entry_error(&e)));
+                out.error(format!("zip entry {index}: {}", zip_entry_error(&e)));
                 failed_in_a_row += 1;
                 if failed_in_a_row >= GIVE_UP_AFTER {
-                    out.errors.push(format!("gave up after {GIVE_UP_AFTER} unreadable zip entries in a row"));
+                    out.error(format!("gave up after {GIVE_UP_AFTER} unreadable zip entries in a row"));
                     break;
                 }
                 continue;
@@ -556,7 +657,7 @@ where
                     Ok(0) => continue,
                     Ok(_) => held = io::Cursor::new(first.to_vec()),
                     Err(e) => {
-                        out.errors.push(format!("{name}: {e}"));
+                        out.error(format!("{}: {e}", brief(&name)));
                         continue;
                     }
                 }
@@ -567,10 +668,11 @@ where
             continue;
         }
         // A zip entry carries its own CRC-32, stored or not, checked at its end.
-        let mut member = held.chain(entry.reader());
+        let mut member = Stoppable { inner: held.chain(entry.reader()), ctl };
         match decode_member(&name, &mut member, &mut f).and_then(|rest| finish(rest, &mut member)) {
             Ok(()) => out.members_searched += 1,
-            Err(e) => out.errors.push(format!("{name}: {e}")),
+            Err(_) if ctl.stopped() => return out,
+            Err(e) => out.error(format!("{}: {e}", brief(&name))),
         }
     }
 
@@ -579,7 +681,7 @@ where
     // central directory names, as unzip would, but which was meant is not
     // knowable.
     for w in &archive.fidelity().warnings {
-        out.errors.push(w.to_string());
+        out.error(w.to_string());
     }
 
     // The directory is the zip's own account of itself, and the walk above
@@ -593,14 +695,16 @@ where
             if let Some(records) = checked.records
                 && records != read
             {
-                out.errors.push(format!(
+                out.error(format!(
                     "the zip's directory lists {records} entries and {read} were read: \
                      its end record does not count them all"
                 ));
             }
-            out.errors.extend(checked.errors);
+            for e in checked.errors {
+                out.error(e);
+            }
         }
-        Err(e) => out.errors.push(format!("could not check the zip against its directory: {e}")),
+        Err(e) => out.error(format!("could not check the zip against its directory: {e}")),
     }
     out
 }
@@ -821,7 +925,7 @@ where
     R: Read,
     F: FnMut(&str, &mut dyn Read) -> io::Result<Rest>,
 {
-    walk_stream(rdr, globs, false, None, f)
+    walk_stream(rdr, globs, false, None, &crate::sched::Control::detached(), f)
 }
 
 /// [`for_each_member`], told whether `rdr` is a decoder, whose rest is read
@@ -831,6 +935,7 @@ fn walk_stream<R, F>(
     globs: Option<&crate::source::Globs>,
     compressed: bool,
     shrink: Option<Shrink>,
+    ctl: &crate::sched::Control,
     mut f: F,
 ) -> Outcome
 where
@@ -844,8 +949,9 @@ where
         Ok((head, is_tar, body))
     }) {
         Ok(v) => v,
+        Err(_) if ctl.stopped() => return out,
         Err(e) => {
-            out.errors.push(format!("read failed: {e}"));
+            out.error(format!("read failed: {e}"));
             return out;
         }
     };
@@ -855,7 +961,7 @@ where
         out.members_seen = 1;
         // Under a compression trg does read, as in `logs.cpio.gz`.
         if let Some(why) = sniff(&head).unreadable() {
-            out.errors.push(why);
+            out.error(why);
             return out;
         }
         let mut seen = SawEnd { inner: &mut body, ended: false };
@@ -874,7 +980,8 @@ where
         });
         match searched {
             Ok(()) => out.members_searched = 1,
-            Err(e) => out.errors.push(format!("search failed: {e}")),
+            Err(_) if ctl.stopped() => {}
+            Err(e) => out.error(format!("search failed: {e}")),
         }
         return out;
     }
@@ -894,10 +1001,11 @@ where
         let name = match ar.next_member() {
             Ok(Some(name)) => name,
             Ok(None) => break,
+            Err(_) if ctl.stopped() => break,
             Err(e) => {
                 // Truncated or corrupt: stop this archive, keep what we had.
                 let e = e.to_string();
-                out.errors.push(if e == crate::tarwalk::NO_END {
+                out.error(if e == crate::tarwalk::NO_END {
                     e
                 } else if ar.end_seen() {
                     format!("after the tar's end: {e}")
@@ -919,7 +1027,8 @@ where
         let res = decode_member(&name, &mut ar.content(), &mut f);
         match res {
             Ok(_) => out.members_searched += 1,
-            Err(e) => out.errors.push(format!("{name}: {e}")),
+            Err(_) if ctl.stopped() => break,
+            Err(e) => out.error(format!("{}: {e}", brief(&name))),
         }
     }
 

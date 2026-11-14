@@ -23,7 +23,7 @@ can be run one at a time after `fixtures.sh`.
 | `edges.py` | symlink loops, unreadable paths, devices, odd flags and patterns | nothing crashes or hangs |
 | `parallel.py` | 300 mixed archives, some damaged, at `-j` 1 to 64; SIGINT, SIGTERM, `\| head` | stdout and exit identical at every `-j`; signals end trg within 5 s |
 | `diff.py` | random logs, patterns, flags and archive formats against rg | byte-identical output and exit code |
-| `bombs.py` | 200k members, 70k zip entries, 60 KB names, 4 GiB gzip bombs | expected exit, within time, under 64 MB |
+| `bombs.py` | 200k members, 70k zip entries, 60 KB names, 4 GiB gzip bombs; 1.2 GB of matches printed (alone, and four at `-j4`), a 400 MB `-T` listing, 300k failing members | expected exit, within time, under 64 MB (160 MB at `-j4`) |
 
 Expected exceptions, tallied apart rather than failed:
 

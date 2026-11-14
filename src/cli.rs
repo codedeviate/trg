@@ -110,12 +110,14 @@ NOTES (documented, and surprising the first time):
       signature, reads as plain bytes; a plain .tar has no checksum on data.
       -q, -l and -m stop searching at their match, and still read anything
       compressed to its end: a cut-off .gz is a 2 under -q as without it.
-    With -j above 1, results wait so they come out in order. Once more than
-      64 MB is waiting, trg writes it out of order, with a note on stderr.
-      Memory can still peak well above 64 MB: archives being searched are not
-      counted.
-    On a broken pipe (`| head`) trg stops early and exits 0, leaving later
-      archives unread.
+    With -j above 1, results wait so they come out in order, always. An
+      archive's lines are written as they are found once it is its turn, so
+      memory does not grow with the number of matches. Up to 64 MB of output
+      waits its turn; past that, the archives producing it pause until theirs
+      comes. An archive that fails in every member reports its first 100
+      errors and counts the rest.
+    On a broken pipe (`| head`) trg stops at once and exits 0, leaving the
+      rest of that archive and the later ones unread.
     Compression is detected from content, never from the filename, so there is
       no -z flag. gzip, zstd, xz, bzip2 and lz4 are recognised, each unwrapped
       one level, so a logrotate'd access.log.1.gz, .zst, .xz, .bz2 or .lz4
