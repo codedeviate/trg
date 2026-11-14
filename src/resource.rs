@@ -21,7 +21,7 @@
 //! | [`finish`]  | `FADV_DONTNEED` (the actual work)  | no-op |
 
 use std::fs::File;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
 /// Lower our own scheduling priority, and only ever lower it.
 ///
@@ -63,6 +63,13 @@ fn current_niceness() -> Option<i32> {
 }
 
 /// Put our reads in the idle I/O class so they queue behind Apache's.
+///
+/// Call it before any thread is started, as [`set_priority`]: on Linux both
+/// act on the calling thread alone (`who` 0 is this thread, and niceness is
+/// per-thread there too), and a thread inherits them from the one that
+/// starts it. Called after the workers exist, it would leave them all at the
+/// priority trg was launched with. Its result is not looked at: where the
+/// class cannot be set the search is no less correct, only less polite.
 ///
 /// `ioprio_set` has no libc wrapper on Linux, so it goes through `syscall(2)`
 /// with `SYS_ioprio_set` (30 on aarch64, 251 on x86_64 — `libc` picks the
@@ -207,12 +214,12 @@ pub fn next_gate(gate: usize, jobs: usize, load: f64, limit: f64) -> usize {
 /// The returned gate is what [`crate::sched::run_gated`] admits. A detached
 /// thread moves it every [`LOAD_CHECK`] and stops once nobody else holds the
 /// gate, so it costs one sleeping thread for the length of the run.
-pub fn load_gate(jobs: usize, limit: Option<f64>) -> Option<std::sync::Arc<AtomicUsize>> {
+pub fn load_gate(jobs: usize, limit: Option<f64>) -> Option<std::sync::Arc<crate::sched::Gate>> {
     let limit = limit?;
     if jobs <= 1 {
         return None;
     }
-    let gate = std::sync::Arc::new(AtomicUsize::new(starting_gate(jobs, limit, load_average_1m()?)));
+    let gate = std::sync::Arc::new(crate::sched::Gate::new(starting_gate(jobs, limit, load_average_1m()?)));
     let held = std::sync::Arc::downgrade(&gate);
     // No thread means no adapting, not no search and not no limit: the gate
     // stays where it started, which is what the old one-off check did.
@@ -223,8 +230,8 @@ pub fn load_gate(jobs: usize, limit: Option<f64>) -> Option<std::sync::Arc<Atomi
                 std::thread::sleep(LOAD_CHECK);
                 let Some(gate) = held.upgrade() else { return };
                 if let Some(load) = load_average_1m() {
-                    let now = gate.load(Ordering::Relaxed);
-                    gate.store(next_gate(now, jobs, load, limit), Ordering::Relaxed);
+                    let now = gate.open.load(Ordering::Relaxed);
+                    gate.open.store(next_gate(now, jobs, load, limit), Ordering::Relaxed);
                 }
             }
         });

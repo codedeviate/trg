@@ -248,44 +248,45 @@ fn sched_emits_ready_results_without_waiting_for_stragglers() {
 }
 
 #[test]
-fn sched_spills_out_of_order_rather_than_growing_unbounded() {
-    // Job 0 refuses to finish until a later job has been emitted. In order,
-    // nothing after 0 may be emitted before it, so only the spill cap can
-    // release job 0 — without the cap, it runs out of patience.
-    let later_emitted = Latch::default();
-    let released = Mutex::new(None);
+fn sched_holds_the_order_however_much_is_waiting() {
+    // The cap used to be an escape valve: past it, whatever was parked was
+    // flushed out of order, with exit 0. Now a job that is not next to be
+    // written waits instead. Job 0 is the straggler; the others each write
+    // far more than the cap and must wait behind it, not go around it.
     let seen = Mutex::new(Vec::new());
 
     trg::sched::run(
         jobs(4),
-        // absurdly low cap, so anything held at all must spill
+        // absurdly low cap, so anything held at all is over it
         trg::sched::Config { workers: 4, sorted: true, spill_bytes: 8 },
         buf,
         || (),
         |job, _c: &mut (), b| {
             use std::io::Write;
             if job.index == 0 {
-                *released.lock().unwrap() = Some(later_emitted.wait_for(1));
+                std::thread::sleep(Duration::from_millis(200));
             }
-            write!(b, "{}", "y".repeat(100)).unwrap();
+            for _ in 0..10 {
+                write!(b, "{}", "y".repeat(100)).unwrap();
+            }
             trg::archive::Outcome::default()
         },
         |done: &Done| {
-            seen.lock().unwrap().push(done.index);
-            if done.index != 0 {
-                later_emitted.add();
-            }
+            seen.lock().unwrap().push((done.index, done.buffer.len()));
             Ok(())
         },
     )
     .unwrap();
 
-    let order = seen.into_inner().unwrap();
+    let pieces = seen.into_inner().unwrap();
+    let order: Vec<usize> = pieces.iter().map(|(i, _)| *i).collect();
     let mut sorted = order.clone();
     sorted.sort_unstable();
-    assert_eq!(sorted, (0..4).collect::<Vec<_>>(), "every job must be emitted exactly once");
-    assert_eq!(*released.lock().unwrap(), Some(true), "the cap must force an out-of-order flush");
-    assert_ne!(order.first(), Some(&0), "the cap must force an out-of-order flush");
+    assert_eq!(order, sorted, "output left the order: {order:?}");
+    for i in 0..4 {
+        let bytes: usize = pieces.iter().filter(|(j, _)| *j == i).map(|(_, n)| n).sum();
+        assert_eq!(bytes, 1000, "job {i} lost or gained output");
+    }
 }
 
 #[test]
@@ -691,13 +692,9 @@ fn backpressure_does_not_deadlock_when_the_cap_is_below_one_job() {
         .unwrap();
         seen.into_inner().unwrap()
     });
-    // Not an ordering assertion: a cap below a single job's output means the
-    // spill valve fires by design, and abandoning the order is what it is for.
-    // What must hold is that the run completes and loses nothing.
-    let mut got = seen;
-    assert_eq!(got.len(), 24, "every job must be emitted exactly once");
-    got.sort_unstable();
-    assert_eq!(got, (0..24).collect::<Vec<_>>());
+    // In order, too: a cap below a single job's output makes every job wait
+    // for its turn, and none of them goes around the one ahead.
+    assert_eq!(seen, (0..24).collect::<Vec<_>>(), "every job exactly once, in order");
 }
 
 #[test]

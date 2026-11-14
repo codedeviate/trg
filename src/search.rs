@@ -124,8 +124,13 @@ pub fn sink_limit(o: &SearchOpts) -> Option<u64> {
 /// enforce; `SearcherBuilder::max_matches` does that now, as in rg, because
 /// stopping the search from the sink cut off `-m`'s after-context and let
 /// `-v -m` print a line past the limit.
-pub struct MaxCount<S> {
+pub struct MaxCount<'c, S> {
     inner: S,
+    /// Told that the archive's output starts with a line, before that line
+    /// is written: its first bytes may be on their way to stdout while the
+    /// member is still being searched, and the `--` ahead of them is decided
+    /// then. `None` once the archive has printed something.
+    lead: Option<&'c crate::sched::Control>,
     seen: u64,
     /// [`sink_limit`], and the after-context it allows past it.
     limit: Option<(u64, usize)>,
@@ -150,9 +155,26 @@ pub struct MaxCount<S> {
     binary: bool,
 }
 
-impl<S: Sink> MaxCount<S> {
+impl<'c, S: Sink> MaxCount<'c, S> {
     pub fn new(inner: S, limit: Option<(u64, usize)>, separate: bool, standard: bool) -> Self {
-        Self { inner, seen: 0, limit, left: None, separate, printed: false, line: false, standard, binary: false }
+        Self {
+            inner,
+            lead: None,
+            seen: 0,
+            limit,
+            left: None,
+            separate,
+            printed: false,
+            line: false,
+            standard,
+            binary: false,
+        }
+    }
+
+    /// Have `ctl` told when this member's first line is about to be written.
+    pub fn leading(mut self, ctl: Option<&'c crate::sched::Control>) -> Self {
+        self.lead = ctl;
+        self
     }
 
     /// The default printer, past binary data: it takes no more lines.
@@ -187,6 +209,9 @@ impl<S: Sink> MaxCount<S> {
         if !self.printed {
             self.printed = true;
             self.line = true;
+            if let Some(ctl) = self.lead {
+                ctl.leads_with_line();
+            }
             if self.separate {
                 self.inner.context_break(s)?;
             }
@@ -218,7 +243,7 @@ impl<S: Sink> MaxCount<S> {
     }
 }
 
-impl<S: Sink> Sink for MaxCount<S> {
+impl<S: Sink> Sink for MaxCount<'_, S> {
     type Error = S::Error;
 
     fn matched(&mut self, s: &Searcher, m: &SinkMatch<'_>) -> Result<bool, S::Error> {
@@ -447,6 +472,11 @@ pub struct MemberVerdict {
     /// What was searched is itself compressed, in this format: the level
     /// under the one that was removed.
     pub compressed: Option<&'static str>,
+    /// The search ended in this error: a read that failed, or a write.
+    /// Beside the verdict and not in place of it, because a member that
+    /// matched and *then* failed still matched, and what it printed before
+    /// the failure was still printed.
+    pub error: Option<io::Error>,
 }
 
 /// Search one member, returning whether it matched.
@@ -458,15 +488,17 @@ pub struct MemberVerdict {
 /// `has_match()` either, because `SummarySink` retracts that after seeing
 /// binary data, which would make `-c` exit 1 on an archive `-l`, `-q`,
 /// `--json` and the default mode all agree matched.
+#[allow(clippy::too_many_arguments)]
 fn search_member(
-    printer: &mut crate::print::Printer<'_>,
+    printer: &mut crate::print::Printer<'_, '_>,
     m: &grep_regex::RegexMatcher,
     s: &mut Searcher,
     r: &mut dyn io::Read,
     display: &str,
     limit: Option<(u64, usize)>,
     separate: bool,
-) -> io::Result<MemberVerdict> {
+    lead: Option<&crate::sched::Control>,
+) -> MemberVerdict {
     // The three printers have unrelated sink types, so the body is monomorphic
     // per arm; a macro keeps the one real sequence — build sink, cap it,
     // search, ask it what it saw — written once. `$stats` reads the sink's
@@ -474,7 +506,7 @@ fn search_member(
     macro_rules! run {
         ($p:expr, $standard:expr, |$sink:ident| $stats:expr) => {{
             let sink = $p.sink_with_path(m, display);
-            let mut capped = MaxCount::new(sink, limit, separate, $standard);
+            let mut capped = MaxCount::new(sink, limit, separate, $standard).leading(lead);
             let mut reads = FullReads::new(&mut *r);
             let res = s.search_reader(m, &mut reads, &mut capped);
             let head = crate::sniff::sniff(&reads.head);
@@ -484,23 +516,20 @@ fn search_member(
                 _ => None,
             };
             let compressed = still_compressed(head);
-            // Read the verdict before propagating: a member that matched and
-            // *then* hit a read error still matched, and the error is recorded
-            // separately by the caller.
             let hit = capped.saw_match();
             let printed = capped.printed();
             let line = capped.printed_line();
-            res.map_err(io::Error::other)?;
+            let error = res.err().map(io::Error::other);
             let $sink = &capped.inner;
-            MemberVerdict { matched: hit, printed, line, stats: $stats, container, compressed }
+            MemberVerdict { matched: hit, printed, line, stats: $stats, container, compressed, error }
         }};
     }
 
-    Ok(match printer {
+    match printer {
         crate::print::Printer::Standard(p) => run!(p, true, |_sink| None),
         crate::print::Printer::Summary(p) => run!(p, false, |_sink| None),
         crate::print::Printer::Json(p) => run!(p, false, |sink| Some(sink.stats().clone())),
-    })
+    }
 }
 
 /// The name of a compression format, for data that sniffs as one after a
@@ -520,13 +549,17 @@ fn still_compressed(head: crate::sniff::Format) -> Option<&'static str> {
     }
 }
 
-/// Search one archive into `printer`'s buffer.
+/// Search one archive into `printer`'s output, as one job of the run `ctl`
+/// speaks for.
 pub fn search_archive(
     ctx: &SearchCtx<'_>,
     path: &Path,
     s: &mut Searcher,
-    printer: &mut crate::print::Printer<'_>,
+    printer: &mut crate::print::Printer<'_, '_>,
+    ctl: &crate::sched::Control,
 ) -> crate::archive::Outcome {
+    use crate::archive::{brief, push_capped};
+
     let (m, sep, globs) = (ctx.matcher, ctx.sep, ctx.globs);
 
     let mut matched = false;
@@ -539,9 +572,13 @@ pub fn search_archive(
     let mut leads_with_line = false;
     let mut kept = false;
     let mut stats: Option<grep_printer::Stats> = None;
+    // Capped like the walk's own errors: an archive of a million nested
+    // archives would otherwise keep a million notes.
     let mut notes: Vec<String> = Vec::new();
+    let mut more_notes = 0;
     let mut unread: Vec<String> = Vec::new();
-    let mut out = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, r| {
+    let mut more_unread = 0;
+    let mut out = crate::archive::walk_archive_in(path, ctx.drop_cache, globs, ctl, |member, r| {
         let Some(shown) = plain_name(member, path, ctx) else {
             return Ok(crate::archive::Rest::Leave);
         };
@@ -556,7 +593,9 @@ pub fn search_archive(
             return Ok(crate::archive::Rest::Verify);
         }
         let separate = ctx.separate && printed;
-        let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate)?;
+        // Only until the archive has printed: what leads it is settled then.
+        let lead = (!printed).then_some(ctl);
+        let v = search_member(printer, m, s, r, &display, ctx.sink_limit, separate, lead);
         matched |= v.matched;
         if !printed && v.printed {
             leads_with_line = v.line;
@@ -565,16 +604,30 @@ pub fn search_archive(
         if let Some(st) = &v.stats {
             *stats.get_or_insert_with(grep_printer::Stats::new) += st;
         }
+        // After the verdict is taken, not in place of it: `| head -1` closes
+        // the pipe on a member that matched, and that run is a 0.
+        if let Some(e) = v.error {
+            return Err(e);
+        }
         // Archives inside archives are not opened (OUT-OF-SCOPE.md). Their
         // bytes are searched as one binary file, which finds a line in a
         // plain tar but nothing in a compressed zip entry, and shows a hit
         // only as `binary file matches`. A tar is the likelier: `tar -cf
         // month.tar day*.tgz` holds tgzs, unwrapped here to tars.
         match v.container {
-            Some("zip") => notes.push(format!("{display}: a zip inside the archive; its entries are not opened")),
-            Some(kind) => notes.push(format!(
-                "{display}: a {kind} inside the archive; searched as one binary file, not member by member"
-            )),
+            Some("zip") => push_capped(
+                &mut notes,
+                &mut more_notes,
+                format!("{}: a zip inside the archive; its entries are not opened", brief(&display)),
+            ),
+            Some(kind) => push_capped(
+                &mut notes,
+                &mut more_notes,
+                format!(
+                    "{}: a {kind} inside the archive; searched as one binary file, not member by member",
+                    brief(&display)
+                ),
+            ),
             None => {}
         }
         // One level of compression is removed (the bomb guard) and this
@@ -582,7 +635,14 @@ pub fn search_archive(
         // compressed bytes under the first level, so it is an error and
         // not a note: without it this was a 1 with no word.
         if let Some(kind) = v.compressed {
-            unread.push(format!("{display}: still compressed ({kind}) after one level was removed: not searched"));
+            push_capped(
+                &mut unread,
+                &mut more_unread,
+                format!(
+                    "{}: still compressed ({kind}) after one level was removed: not searched",
+                    brief(&display)
+                ),
+            );
         }
         // Read to its end whatever the search found. `-q`, `-l`, `-m` and a
         // match after binary data all stop the *search* early, and stopping
@@ -604,6 +664,12 @@ pub fn search_archive(
             "{}: no match, but {format} cannot detect truncation: a cut-off file reads as a shorter one",
             crate::source::display(path)
         ));
+    }
+    if more_notes > 0 {
+        notes.push(crate::archive::and_more(path, more_notes, "notes"));
+    }
+    if more_unread > 0 {
+        unread.push(crate::archive::and_more(path, more_unread, "members still compressed"));
     }
     out.errors.extend(unread);
     out.matched = matched;
@@ -633,12 +699,13 @@ pub fn search_archive(
 pub fn list_members(
     ctx: &SearchCtx<'_>,
     path: &Path,
+    ctl: &crate::sched::Control,
     out: &mut dyn io::Write,
 ) -> crate::archive::Outcome {
     let (sep, globs) = (ctx.sep, ctx.globs);
 
     let mut listed = false;
-    let mut outcome = crate::archive::walk_archive(path, ctx.drop_cache, globs, |member, _| {
+    let mut outcome = crate::archive::walk_archive_in(path, ctx.drop_cache, globs, ctl, |member, _| {
         let Some(shown) = plain_name(member, path, ctx) else {
             return Ok(crate::archive::Rest::Leave);
         };

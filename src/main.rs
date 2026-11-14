@@ -95,8 +95,13 @@ fn run() -> anyhow::Result<RunStatus> {
 
     // Stay out of the way before doing any work: a nice'd, idle-I/O process
     // uses spare capacity and is preempted the moment Apache wants the core.
-    // Set once, process-wide, so the workers inherit it rather than each
-    // re-applying it.
+    // Set once, so the workers inherit it rather than each re-applying it.
+    //
+    // The order is load-bearing: these two come before anything that starts a
+    // thread, `load_gate` below included. On Linux neither is process-wide.
+    // Niceness and the I/O class belong to the calling *thread*, and a new
+    // thread copies them from the one that starts it, so a worker started
+    // first would search at the priority trg was launched with.
     trg::resource::set_priority(args.nice);
     trg::resource::set_io_idle();
     // With --load-limit, all -j workers start and the gate decides how many may
@@ -104,7 +109,7 @@ fn run() -> anyhow::Result<RunStatus> {
     // it the gate is simply -j, and it never moves.
     let jobs_count = args.jobs;
     let gate = trg::resource::load_gate(jobs_count, args.load_limit)
-        .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(jobs_count)));
+        .unwrap_or_else(|| std::sync::Arc::new(trg::sched::Gate::new(jobs_count)));
 
     let matcher = search::build_matcher(&args.patterns, &args.search)?;
 
@@ -186,18 +191,24 @@ fn run() -> anyhow::Result<RunStatus> {
         // limit and rebuilding one per archive makes peak RSS climb with the
         // archive count.
         || search::build_searcher(&args.search),
-        |job, searcher, buf| {
+        |job, searcher, out| {
+            // The run's side of this job, taken before the printer borrows
+            // the output for the length of the search.
+            let ctl = out.control();
             // `-T` is a different question, not a different printer: it never
             // reads a member's *content*, so it takes its own path rather than
             // threading a "do not search" flag through the search. It still
             // opens the archive the same way, under the same cache policy.
             if args.list_members {
-                let mut out = escape::Escaped::new(buf, escape_stdout);
-                return search::list_members(&ctx, &job.path, &mut out);
+                let mut out = escape::Escaped::new(out, escape_stdout);
+                return search::list_members(&ctx, &job.path, &ctl, &mut out);
             }
-            let mut printer = print::build(&args.print, buf);
-            search::search_archive(&ctx, &job.path, searcher, &mut printer)
+            let mut printer = print::build(&args.print, out);
+            search::search_archive(&ctx, &job.path, searcher, &mut printer, &ctl)
         },
+        // Called once per piece of an archive's output: once for most, and
+        // for one that prints a great deal, with each segment as it fills,
+        // `part` set on all but the last. Only the last carries the verdict.
         |done| {
             // From the sink's own verdict, never from "did this archive write
             // any bytes". `-q` matches and writes nothing; `-c` writes a line
@@ -210,16 +221,20 @@ fn run() -> anyhow::Result<RunStatus> {
             if let Some(st) = &done.outcome.stats {
                 stats += st;
             }
-            read_any |= done.outcome.errors.is_empty();
+            read_any |= !done.part && done.outcome.errors.is_empty();
             // The `--` between archives; `search_archive` writes the ones
             // between members of one archive. The rule is rg's, between
             // files: `--` goes before a file's first *line* once anything at
             // all has been printed. So an archive whose output starts with
             // `binary file matches` gets none before it, and still counts
             // as output for the archive after it.
+            //
+            // Decided on the archive's first piece, which may leave while
+            // the archive is still being searched: the scheduler knows by
+            // then what leads it.
             let mut r = Ok(());
-            if ctx.separate && !done.buffer.is_empty() {
-                if printed_any && done.outcome.leads_with_line {
+            if ctx.separate && !done.continued && !done.buffer.is_empty() {
+                if printed_any && done.leads_with_line {
                     let mut sep = bw.buffer();
                     r = std::io::Write::write_all(&mut sep, separator).and_then(|()| bw.print(&sep));
                 }
