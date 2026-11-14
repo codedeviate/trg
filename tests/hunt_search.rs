@@ -432,6 +432,11 @@ fn a_nice_value_that_cannot_be_set_is_said_once() {
     let (_, err, c) = run(&["--nice", "-5", "line", f.path.to_str().unwrap()]);
     let got = text(&err);
     assert_eq!(c, Some(0), "{got}");
+    if got.is_empty() {
+        // Some hosts let an ordinary user raise its priority: GitHub's
+        // macOS runners do. Nothing failed there, so nothing is said.
+        return;
+    }
     assert_eq!(got.lines().count(), 1, "{got}");
     assert!(got.contains("--nice -5"), "{got}");
     // Lowering it never fails, and says nothing.
