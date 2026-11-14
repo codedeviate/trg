@@ -41,6 +41,19 @@ How versions are chosen before 1.0.0 is described in
   to 2.
 - **Breaking:** `-T` with `-q`, `-l`, `-c` or `--json` is a usage error;
   the flag was ignored.
+- **Breaking:** an archive's output is written as it is found, in order,
+  in bounded memory. It was held whole until the archive was done: 1.6 GB
+  of matching lines took 1.6 GB, at `-j1` too. A job ahead in the order
+  streams; the others hold up to 64 MB between them and then wait. Sorted
+  output is now always in order: the note `held output exceeded ...
+  flushing out of order` is gone, and so is the reordering it announced,
+  which ordinary `-j8` runs hit. Heavy output at `-j4` and up is slower
+  for it (0.44 s to 0.68 s over 1.65 GB of lines); a search with little
+  output is not. `| head` ends the run at once.
+- An archive reports at most 100 errors and 100 notes, then counts the
+  rest; a member name in a diagnostic is cut at 1024 bytes.
+- `-T` on a cut-off compressed file that is not a tar is a 2, as on a
+  cut-off `.tgz`.
 - trg reads tars with its own reader, not the `tar` crate. Error texts
   under `tar entry:` changed.
 - A zip entry named as a directory or flagged a symlink is searched and
@@ -75,6 +88,12 @@ How versions are chosen before 1.0.0 is described in
 - A closed stderr pipe no longer aborts trg (SIGABRT); a closed stdout, or
   a closed stdin named by `-`, is a 2 where output was lost for a 0.
 - A plain file that shrank mid-read is a 2 even when it matched.
+- `--load-limit` holds back on load that others add: it took the whole
+  gate off the load average as trg's own, so workers waiting on I/O, or
+  `-j` above the archive count, kept it open.
+- A worker thread the OS refuses is a warning, not an abort, and `-j`
+  above the descriptor limit waits for descriptors where it reported files
+  unread.
 
 ## [0.16.0] - 2026-11-07
 
