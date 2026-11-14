@@ -62,7 +62,7 @@ fn stdout_of(args: &[&str], paths: &[PathBuf]) -> (Vec<u8>, Option<i32>, String)
 ///
 /// The child is reaped by `wait4` below, which is how its resource usage is
 /// had; `Child::wait` would reap it first and leave nothing to ask.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 #[allow(clippy::zombie_processes)]
 fn peak_rss_mb(args: &[&str], paths: &[PathBuf]) -> (f64, Option<i32>) {
     let child = Command::new(TRG)
@@ -76,10 +76,39 @@ fn peak_rss_mb(args: &[&str], paths: &[PathBuf]) -> (f64, Option<i32>) {
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     let got = unsafe { libc::wait4(child.id() as libc::pid_t, &mut status, 0, &mut ru) };
     assert_eq!(got, child.id() as libc::pid_t, "wait4 failed");
-    // Bytes on macOS, KiB everywhere else.
-    let per_mb = if cfg!(target_os = "macos") { 1_048_576.0 } else { 1024.0 };
     let code = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
-    (ru.ru_maxrss as f64 / per_mb, code)
+    (ru.ru_maxrss as f64 / 1_048_576.0, code)
+}
+
+/// Not `wait4`'s `ru_maxrss` here: Linux carries the peak of the process
+/// that forked into the child across its exec, so the figure is this test
+/// binary's own peak, some 700 MB with the fixtures it builds. The child's
+/// address space keeps its own high-water mark, `VmHWM`, which only grows,
+/// so the last reading before it exits is its peak to within a poll.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn peak_rss_mb(args: &[&str], paths: &[PathBuf]) -> (f64, Option<i32>) {
+    let mut child = Command::new(TRG)
+        .args(args)
+        .args(paths)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let status_file = format!("/proc/{}/status", child.id());
+    let mut peak_kb = 0u64;
+    loop {
+        let hwm = std::fs::read_to_string(&status_file).ok().and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("VmHWM:"))
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|v| v.parse::<u64>().ok())
+        });
+        peak_kb = peak_kb.max(hwm.unwrap_or(0));
+        if let Some(st) = child.try_wait().unwrap() {
+            return (peak_kb as f64 / 1024.0, st.code());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// One archive's whole output used to sit in memory until the archive was
