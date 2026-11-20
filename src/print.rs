@@ -77,10 +77,10 @@ pub fn build<'a, 'o>(o: &PrintOpts, buf: &'a mut Output<'o>) -> Printer<'a, 'o> 
     // place instead of implied by the buffer's construction.
     let specs =
         if o.color { ColorSpecs::default_with_color() } else { ColorSpecs::default() };
-    // Every printer, not just the standard one: `-l` and `-c` print member
-    // names, and member names come out of the archive.
     // Under the escaping, so every newline it sees is a row's own.
     let buf = Spaced::new(buf, o.mode == Mode::Standard && o.spaced);
+    // Every printer, not just the standard one: `-l` and `-c` print member
+    // names, and member names come out of the archive.
     let buf = Escaped::new(buf, o.escape);
 
     match o.mode {

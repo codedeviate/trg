@@ -419,7 +419,7 @@ where
             print::Mode::Count => "-c",
             _ => "--json",
         };
-        anyhow::bail!("-T lists members without searching, so {flag} has nothing to apply to: give one or the other");
+        anyhow::bail!("-T lists members without searching, and {flag} prints none: give one or the other");
     }
 
     // `--spaced` spaces the lines of a search. A mode that prints no lines,
@@ -438,7 +438,7 @@ where
             }
         };
         if let Some(flag) = other {
-            anyhow::bail!("--spaced spaces the lines of a search, so {flag} has nothing to apply to: give one or the other");
+            anyhow::bail!("--spaced spaces the lines of a search, and {flag} prints none: give one or the other");
         }
     }
 

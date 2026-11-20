@@ -8,9 +8,11 @@ use termcolor::{ColorSpec, HyperlinkSpec, WriteColor};
 /// A writer that follows every line with an empty one.
 ///
 /// It sits under [`Escaped`](crate::escape::Escaped), between it and the
-/// buffer: escaping turns every control byte but tab and newline into text, and
-/// a path or member name carries no raw newline, so each `\n` that reaches
-/// this writer ends a row of output and nothing else.
+/// buffer. The searcher splits rows on `\n`, so a row's text has no raw `\n`,
+/// and `one_line_names` (`SearchCtx::shown`, via `crate::escape::name`) keeps
+/// a path or member name on one line, so each `\n` that reaches this writer
+/// ends a row of output. Only `--escape never` lets a raw newline in a name
+/// through, which gives a stray gap; that is accepted.
 ///
 /// The gap copies the row's own line ending, `\r\n` after a CRLF row and `\n`
 /// after an LF one, so a Windows log does not come out with mixed endings. The
@@ -54,7 +56,7 @@ impl<W: Write> Write for Spaced<W> {
             return Ok(buf.len());
         }
         let mut rest = buf;
-        while let Some(nl) = rest.iter().position(|&b| b == b'\n') {
+        while let Some(nl) = memchr::memchr(b'\n', rest) {
             let (line, tail) = rest.split_at(nl + 1);
             self.inner.write_all(line)?;
             self.track(&line[..nl]);
@@ -138,6 +140,14 @@ mod tests {
     #[test]
     fn crlf_rows_get_a_crlf_gap_and_the_crlf_separator_none() {
         assert_eq!(through(true, &[b"x\r\n--\r\ny\r\n"]), b"x\r\n\r\n--\r\ny\r\n\r\n");
+    }
+
+    #[test]
+    fn a_crlf_split_across_writes_still_gets_a_crlf_gap() {
+        assert_eq!(
+            through(true, &[b"x\r", b"\n", b"--\r", b"\n", b"y\r\n"]),
+            b"x\r\n\r\n--\r\ny\r\n\r\n"
+        );
     }
 
     #[test]
