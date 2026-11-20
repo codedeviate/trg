@@ -82,6 +82,8 @@ disk made `trg -j1` take longer on the wall clock (22 s against `zstdgrep`'s
   `-C`, `-o`, `-c`, `-l`, `-q`, `--json`, …). `-g` filters *members* inside
   archives, `--archive-glob` filters the archives a directory walk finds, and
   both take ripgrep's `!` exclusions (`-g '!*.error.log'`).
+- `--spaced` puts an empty line after every printed line, so a long wrapped
+  log line is easy to tell from the next; `--` between groups stays as is.
 - Polite by default: `nice 10`, idle I/O priority, one archive at a time, and
   no page-cache footprint (on macOS, zips excepted). `--turbo` runs one archive per CPU at normal
   priority when you need the answer now; reads stay at idle I/O priority and

@@ -39,6 +39,7 @@ OUTPUT (same meaning as ripgrep):
     -B, --before NUM      lines of leading context
     -C, --context NUM     lines of context on both sides
     -o, --only-matching   print only the matching part
+        --spaced          an empty line after every printed line
     -c, --count           print a count per member
     -l, --files-with-matches
                           print archive:member paths only
@@ -293,6 +294,7 @@ where
             }
             Short('C') | Long("context") => ctx_both = Some(number(&mut p, "--context")?),
             Short('o') | Long("only-matching") => a.print.only_matching = true,
+            Long("spaced") => a.print.spaced = true,
             Short('c') | Long("count") => a.count = true,
             Short('l') | Long("files-with-matches") => a.files_with_matches = true,
             Short('q') | Long("quiet") => a.quiet = true,
@@ -418,6 +420,26 @@ where
             _ => "--json",
         };
         anyhow::bail!("-T lists members without searching, so {flag} has nothing to apply to: give one or the other");
+    }
+
+    // `--spaced` spaces the lines of a search. A mode that prints no lines,
+    // and `-T`, which prints a listing, have none to space; it would be
+    // accepted and ignored, so it is refused instead.
+    if a.print.spaced {
+        let other = if a.list_members {
+            Some("-T")
+        } else {
+            match a.print.mode {
+                print::Mode::Quiet => Some("-q"),
+                print::Mode::FilesWithMatches => Some("-l"),
+                print::Mode::Count => Some("-c"),
+                print::Mode::Json => Some("--json"),
+                _ => None,
+            }
+        };
+        if let Some(flag) = other {
+            anyhow::bail!("--spaced spaces the lines of a search, so {flag} has nothing to apply to: give one or the other");
+        }
     }
 
     // Split the banked positionals into PATTERN and PATH.
@@ -653,6 +675,16 @@ mod tests {
         }
         // Flags that do apply to a listing, or change nothing in one.
         p(&["-T", "-g", "*.log", "--archive-sep", "!", "-A", "1", "a.tgz"]);
+    }
+
+    #[test]
+    fn spaced_refuses_the_modes_without_lines() {
+        for flag in ["-q", "-l", "-c", "--json", "-T"] {
+            let e = err(&["--spaced", flag, "pat", "a.tgz"]);
+            assert!(e.contains("--spaced") && e.contains(flag), "{flag}: {e}");
+        }
+        assert!(p(&["--spaced", "-o", "pat", "a.tgz"]).print.spaced);
+        assert!(!p(&["pat", "a.tgz"]).print.spaced);
     }
 
     /// Flag order must not change the reading: `-T` after the positionals is

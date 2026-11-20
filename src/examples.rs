@@ -302,6 +302,12 @@ pub const SECTIONS: &[Section] = &[
                        groups and between members, as rg puts it between files.",
             },
             Example {
+                cmd: "trg --spaced -A 1 'PHP Fatal' logs/",
+                exit: 0,
+                says: "An empty line after every line printed, so a long wrapped log \
+                       line is easy to tell from the next. -- still ends each group.",
+            },
+            Example {
                 cmd: "trg -B 3 -A 1 'Segmentation fault' logs/",
                 exit: 0,
                 says: "Three lines before and one after: what led up to the crash.",

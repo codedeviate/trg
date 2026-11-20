@@ -9,6 +9,13 @@ How versions are chosen before 1.0.0 is described in
 
 ## [Unreleased]
 
+### Added
+
+- `--spaced` puts an empty line after every printed line, so a long wrapped
+  log line is easy to tell from the next. The `--` between context groups
+  gets none. It is a usage error with `-c`, `-l`, `-q`, `--json` and `-T`,
+  which print no lines of a search.
+
 ## [0.17.0] - 2026-11-14
 
 ### Security
