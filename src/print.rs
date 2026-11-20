@@ -6,6 +6,7 @@ use grep_printer::{
     ColorSpecs, Standard, StandardBuilder, Summary, SummaryBuilder, SummaryKind, JSON, JSONBuilder,
 };
 use crate::escape::Escaped;
+use crate::spaced::Spaced;
 use crate::sched::Output;
 
 /// The mutually exclusive output modes.
@@ -37,6 +38,9 @@ pub struct PrintOpts {
     pub color: bool,
     /// Resolved the same way as `color`, from `--escape` and stdout's tty-ness.
     pub escape: bool,
+    /// `--spaced`: an empty line after every row. Only the standard printer
+    /// honours it; the other modes print aggregates or JSON Lines.
+    pub spaced: bool,
 }
 
 impl Default for PrintOpts {
@@ -47,6 +51,7 @@ impl Default for PrintOpts {
             mode: Mode::Standard,
             color: false,
             escape: false,
+            spaced: false,
         }
     }
 }
@@ -60,9 +65,9 @@ impl Default for PrintOpts {
 /// It writes into the job's [`Output`], which hands what it is given on to
 /// stdout in segments: nothing here holds an archive's whole match volume.
 pub enum Printer<'a, 'o> {
-    Standard(Standard<Escaped<&'a mut Output<'o>>>),
-    Summary(Summary<Escaped<&'a mut Output<'o>>>),
-    Json(JSON<Escaped<&'a mut Output<'o>>>),
+    Standard(Standard<Escaped<Spaced<&'a mut Output<'o>>>>),
+    Summary(Summary<Escaped<Spaced<&'a mut Output<'o>>>>),
+    Json(JSON<Escaped<Spaced<&'a mut Output<'o>>>>),
 }
 
 pub fn build<'a, 'o>(o: &PrintOpts, buf: &'a mut Output<'o>) -> Printer<'a, 'o> {
@@ -74,6 +79,8 @@ pub fn build<'a, 'o>(o: &PrintOpts, buf: &'a mut Output<'o>) -> Printer<'a, 'o> 
         if o.color { ColorSpecs::default_with_color() } else { ColorSpecs::default() };
     // Every printer, not just the standard one: `-l` and `-c` print member
     // names, and member names come out of the archive.
+    // Under the escaping, so every newline it sees is a row's own.
+    let buf = Spaced::new(buf, o.mode == Mode::Standard && o.spaced);
     let buf = Escaped::new(buf, o.escape);
 
     match o.mode {
